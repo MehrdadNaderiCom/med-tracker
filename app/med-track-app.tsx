@@ -139,7 +139,7 @@ const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
 const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
-const PERSONAL_PLAN_VERSION = 2;
+const PERSONAL_PLAN_VERSION = 3;
 const AUTO_ROLLOVER_HOUR = 12;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
@@ -153,6 +153,10 @@ const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
 ];
 
 const ALL_DAYS = WEEK_DAYS.map((day) => day.id);
+const EVEN_ROUTINE_DAYS: WeekDay[] = ["saturday", "monday", "wednesday"];
+const ODD_ROUTINE_DAYS: WeekDay[] = ["sunday", "tuesday", "thursday"];
+const EVEN_ROUTINE_DAYS_LABEL = "Sat, Mon, Wed";
+const ODD_ROUTINE_DAYS_LABEL = "Sun, Tue, Thu";
 
 const DAY_MODE_OPTIONS: {
   id: MedicationDayMode;
@@ -171,13 +175,13 @@ const DAY_MODE_OPTIONS: {
   },
   {
     id: "even-dates",
-    label: "Even calendar dates",
-    description: "Due on dates like 2, 4, 6",
+    label: "Even routine days",
+    description: EVEN_ROUTINE_DAYS_LABEL,
   },
   {
     id: "odd-dates",
-    label: "Odd calendar dates",
-    description: "Due on dates like 1, 3, 5",
+    label: "Odd routine days",
+    description: ODD_ROUTINE_DAYS_LABEL,
   },
 ];
 
@@ -592,7 +596,7 @@ function createStarterMedicationPlan(): Medication[] {
         routineCategoryId: "before-bed",
       },
       notes:
-        "Hair medication before bed on even-numbered calendar dates, alongside your hair spray routine. Swallow the capsule whole; do not chew or open it. MedTrack currently treats even days as even local calendar dates, so confirm if your doctor meant Persian-calendar even days.",
+        "Hair medication before bed on your even routine days: Saturday, Monday, and Wednesday. Use it alongside your hair spray routine. Swallow the capsule whole; do not chew or open it. Follow your doctor's dosing instructions if they change.",
       isActive: true,
     },
     {
@@ -1512,11 +1516,11 @@ function getMedicationDaysLabel(schedule: Medication["schedule"]) {
   }
 
   if (dayMode === "even-dates") {
-    return "Even calendar dates";
+    return `Even routine days (${EVEN_ROUTINE_DAYS_LABEL})`;
   }
 
   if (dayMode === "odd-dates") {
-    return "Odd calendar dates";
+    return `Odd routine days (${ODD_ROUTINE_DAYS_LABEL})`;
   }
 
   return WEEK_DAYS.filter((day) => schedule.days.includes(day.id))
@@ -1531,15 +1535,17 @@ function isMedicationDueOnDate(medication: Medication, date: Date) {
     return true;
   }
 
+  const todayDay = getTodayDay(date);
+
   if (dayMode === "even-dates") {
-    return date.getDate() % 2 === 0;
+    return EVEN_ROUTINE_DAYS.includes(todayDay);
   }
 
   if (dayMode === "odd-dates") {
-    return date.getDate() % 2 === 1;
+    return ODD_ROUTINE_DAYS.includes(todayDay);
   }
 
-  return medication.schedule.days.includes(getTodayDay(date));
+  return medication.schedule.days.includes(todayDay);
 }
 
 function getMedicationCategoryOption(
