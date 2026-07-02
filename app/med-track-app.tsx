@@ -778,6 +778,81 @@ function normalizeReminderSettings(value: unknown): ReminderSettings {
   };
 }
 
+function mergeSyncData(
+  cloudData: MedTrackSyncData,
+  localData: MedTrackSyncData,
+): MedTrackSyncData {
+  const categories = ensureItemsById(
+    [...cloudData.categories, ...localData.categories],
+    DEFAULT_MEDICATION_CATEGORIES,
+  );
+  const routineCategories = ensureItemsById(
+    [...cloudData.routineCategories, ...localData.routineCategories],
+    DEFAULT_ROUTINE_CATEGORIES,
+  ).sort((first, second) => first.sortOrder - second.sortOrder);
+  const medicationById = new Map<string, Medication>();
+  const medicationIdByName = new Map<string, string>();
+
+  cloudData.medications.forEach((medication) => {
+    medicationById.set(medication.id, medication);
+    medicationIdByName.set(normalizeMedicationName(medication.name), medication.id);
+  });
+
+  localData.medications.forEach((medication) => {
+    const normalizedName = normalizeMedicationName(medication.name);
+
+    if (medicationById.has(medication.id) || medicationIdByName.has(normalizedName)) {
+      return;
+    }
+
+    medicationById.set(medication.id, medication);
+    medicationIdByName.set(normalizedName, medication.id);
+  });
+
+  const medications = Array.from(medicationById.values());
+  const logById = new Map<string, IntakeLog>();
+
+  cloudData.logs.forEach((log) => {
+    logById.set(log.id, log);
+  });
+
+  localData.logs.forEach((log) => {
+    if (logById.has(log.id)) {
+      return;
+    }
+
+    const matchingMedicationId = medicationIdByName.get(
+      normalizeMedicationName(log.medicationName),
+    );
+    logById.set(log.id, {
+      ...log,
+      medicationId: matchingMedicationId ?? log.medicationId,
+    });
+  });
+
+  return {
+    medications,
+    logs: Array.from(logById.values()),
+    categories,
+    routineCategories,
+    careDayKey: cloudData.careDayKey || localData.careDayKey,
+    reminderSettings: {
+      browserNotifications:
+        cloudData.reminderSettings.browserNotifications ||
+        localData.reminderSettings.browserNotifications,
+      reminderTimes: {
+        ...localData.reminderSettings.reminderTimes,
+        ...cloudData.reminderSettings.reminderTimes,
+      },
+    },
+    personalPlanVersion: Math.max(
+      cloudData.personalPlanVersion,
+      localData.personalPlanVersion,
+    ),
+    updatedAt: cloudData.updatedAt || localData.updatedAt,
+  };
+}
+
 function normalizeSyncData(
   value: unknown,
   fallbackData: MedTrackSyncData,
@@ -825,7 +900,7 @@ function normalizeSyncData(
       ? resolveCareDayKey(value.careDayKey, now)
       : fallbackData.careDayKey;
 
-  return {
+  const cloudData: MedTrackSyncData = {
     medications,
     logs: Array.isArray(value.logs)
       ? value.logs.flatMap((item) => {
@@ -843,6 +918,8 @@ function normalizeSyncData(
         ? value.updatedAt
         : fallbackData.updatedAt,
   };
+
+  return mergeSyncData(cloudData, fallbackData);
 }
 
 function createLocalSyncData(now: Date): MedTrackSyncData {
