@@ -1,8 +1,12 @@
 "use client";
 
-import { format, parseISO } from "date-fns";
+import { addDays, format, isValid, parseISO, subDays } from "date-fns";
 import {
   Activity,
+  AlarmClock,
+  BarChart3,
+  Bell,
+  BellRing,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -19,12 +23,13 @@ import {
   Save,
   Settings,
   ShieldCheck,
+  Sparkles,
   Trash2,
   UserRound,
   X,
 } from "lucide-react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MedTrackLoading } from "./med-track-loading";
 import type {
@@ -88,6 +93,18 @@ type RoutineCategoryFormState = {
   sortOrder: number;
 };
 
+type ReminderSettings = {
+  browserNotifications: boolean;
+  reminderTimes: Record<string, string>;
+};
+
+type AdherenceStats = {
+  due: number;
+  taken: number;
+  rate: number;
+  streak: number;
+};
+
 const LOGIN_USERNAME = "mail@mehrdadnaderi.com";
 const LOGIN_PASSWORD = "Naderi$2050";
 const MEDICATIONS_STORAGE_KEY = "medtrack-medications";
@@ -95,6 +112,11 @@ const LOGS_STORAGE_KEY = "medtrack-intake-logs";
 const AUTH_STORAGE_KEY = "medtrack-authenticated";
 const CATEGORIES_STORAGE_KEY = "medtrack-categories";
 const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
+const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
+const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
+const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
+const PERSONAL_PLAN_VERSION = 2;
+const AUTO_ROLLOVER_HOUR = 12;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
   { id: "sunday", label: "Sunday", short: "Sun" },
@@ -231,6 +253,11 @@ const DEFAULT_MEDICATION_CATEGORIES: MedicationCategoryOption[] = [
     tone: "amber",
   },
   {
+    id: "dental-care",
+    name: "Dental care",
+    tone: "emerald",
+  },
+  {
     id: "other",
     name: "Other",
     tone: "zinc",
@@ -300,8 +327,23 @@ const UNITS = [
   "drop",
   "spray",
   "application",
+  "session",
   "other",
 ];
+
+const DEFAULT_REMINDER_SETTINGS: ReminderSettings = {
+  browserNotifications: false,
+  reminderTimes: {
+    "after-waking": "12:00",
+    breakfast: "13:00",
+    morning: "13:30",
+    "during-day": "18:00",
+    lunch: "16:00",
+    dinner: "21:00",
+    "before-bed": "02:00",
+    anytime: "",
+  },
+};
 
 function createEmptyForm(): MedicationFormState {
   return {
@@ -369,6 +411,24 @@ function createStarterMedicationPlan(): Medication[] {
   return [
     {
       id: createId(),
+      name: "Oral-B Electric Tooth Brushing - morning",
+      dosage: "1",
+      unit: "session",
+      category: "dental-care",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "after-waking",
+      },
+      notes:
+        "Morning dental care. Brush with fluoride toothpaste after waking. ADA guidance is two minutes, twice daily; if you brush again after acidic food or coffee, wait about 30 minutes.",
+      isActive: true,
+    },
+    {
+      id: createId(),
       name: "Exforge HCT 5/160/12.5 mg Tablet (amlodipine/valsartan/hydrochlorothiazide)",
       dosage: "1",
       unit: "tablet",
@@ -379,10 +439,10 @@ function createStarterMedicationPlan(): Medication[] {
         times: [],
         days: [...ALL_DAYS],
         order: 1,
-        routineCategoryId: "after-waking",
+        routineCategoryId: "breakfast",
       },
       notes:
-        "Morning blood-pressure medication. Take at the same time each day, preferably in the morning, exactly as prescribed. Because it includes hydrochlorothiazide, morning use can help avoid nighttime urination. Track blood pressure and ask your doctor before changing the dose.",
+        "Daily blood-pressure medication with breakfast. Exforge HCT can be taken with or without food, but taking it with the same breakfast routine keeps timing consistent. Swallow with water and follow your doctor's dose.",
       isActive: true,
     },
     {
@@ -400,7 +460,7 @@ function createStarterMedicationPlan(): Medication[] {
         routineCategoryId: "breakfast",
       },
       notes:
-        "Daily vitamin D. Entered with breakfast for consistency and because vitamin D is usually easier to remember with food. If your doctor gave a different timing, follow that plan.",
+        "Daily vitamin D with breakfast. Vitamin D is fat-soluble, so taking it with a meal that contains some fat can improve absorption. Keep the daily dose as your doctor recommended.",
       isActive: true,
     },
     {
@@ -415,10 +475,64 @@ function createStarterMedicationPlan(): Medication[] {
         times: [],
         days: [...ALL_DAYS],
         order: 1,
-        routineCategoryId: "breakfast",
+        routineCategoryId: "lunch",
       },
       notes:
-        "Daily anxiety medication. Entered with breakfast so it stays at a consistent time each day. Take exactly as prescribed and do not stop suddenly without medical guidance. If it causes sleepiness or stomach upset, ask your doctor about timing.",
+        "Daily anxiety medication with lunch. Sertraline can generally be taken morning or evening, with or without food; lunch is entered because it matches your routine. Take it consistently and do not stop suddenly without medical guidance.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Liv.52 Tablet - lunch dose",
+      dosage: "1",
+      unit: "tablet",
+      category: "liver",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "lunch",
+      },
+      notes:
+        "First daily Liv.52 tablet with lunch. Entered as one tablet here and one tablet with dinner so each dose can be checked separately.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Concor COR 2.5 mg Tablet (bisoprolol) - half tablet",
+      dosage: "0.5",
+      unit: "tablet",
+      category: "heart-rate",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "dinner",
+      },
+      notes:
+        "Heart-rate medication with dinner. You said half of a 2.5 mg tablet daily. Keep the time consistent and follow your doctor if they gave a preferred timing. Do not stop beta-blockers suddenly unless your doctor tells you to.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Liv.52 Tablet - dinner dose",
+      dosage: "1",
+      unit: "tablet",
+      category: "liver",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "dinner",
+      },
+      notes:
+        "Second daily Liv.52 tablet with dinner. Split from the old two-tablet entry so lunch and dinner can be tracked independently.",
       isActive: true,
     },
     {
@@ -436,43 +550,7 @@ function createStarterMedicationPlan(): Medication[] {
         routineCategoryId: "morning",
       },
       notes:
-        "Morning skin treatment for dark spots. Apply a thin layer to the target areas after gentle cleansing and drying. Avoid eyes, lips, and irritated skin. Use daytime sunscreen and reduce frequency or contact your dermatologist if irritation becomes strong.",
-      isActive: true,
-    },
-    {
-      id: createId(),
-      name: "Concor COR 2.5 mg Tablet (bisoprolol) - half tablet",
-      dosage: "0.5",
-      unit: "tablet",
-      category: "heart-rate",
-      schedule: {
-        type: "ordered",
-        dayMode: "daily",
-        times: [],
-        days: [...ALL_DAYS],
-        order: 1,
-        routineCategoryId: "during-day",
-      },
-      notes:
-        "Heart-rate medication. You said half of a 2.5 mg tablet during the day. Keep the timing consistent, and follow your doctor if they gave a preferred time. Do not stop beta-blockers suddenly unless your doctor tells you to.",
-      isActive: true,
-    },
-    {
-      id: createId(),
-      name: "Liv.52 Tablet",
-      dosage: "2",
-      unit: "tablet",
-      category: "liver",
-      schedule: {
-        type: "ordered",
-        dayMode: "daily",
-        times: [],
-        days: [...ALL_DAYS],
-        order: 1,
-        routineCategoryId: "lunch",
-      },
-      notes:
-        "Liver support supplement. You said 2 tablets daily, entered with lunch to make it easy to remember with food. Follow your clinician's instructions if they gave a different plan.",
+        "Morning skin treatment for dark spots. Apply a thin layer after gentle cleansing and drying. Avoid eyes, lips, and irritated skin. Use daytime sunscreen; reduce frequency or contact your dermatologist if irritation becomes strong.",
       isActive: true,
     },
     {
@@ -486,11 +564,11 @@ function createStarterMedicationPlan(): Medication[] {
         dayMode: "even-dates",
         times: [],
         days: [...ALL_DAYS],
-        order: 1,
-        routineCategoryId: "dinner",
+        order: 4,
+        routineCategoryId: "before-bed",
       },
       notes:
-        "Hair medication. Doctor instructed 0.5 mg on even-numbered days. Swallow the capsule whole; do not chew or open it. MedTrack currently treats even days as even local calendar dates, so confirm if your doctor meant Persian-calendar even days.",
+        "Hair medication before bed on even-numbered calendar dates, alongside your hair spray routine. Swallow the capsule whole; do not chew or open it. MedTrack currently treats even days as even local calendar dates, so confirm if your doctor meant Persian-calendar even days.",
       isActive: true,
     },
     {
@@ -504,7 +582,7 @@ function createStarterMedicationPlan(): Medication[] {
         dayMode: "daily",
         times: [],
         days: [...ALL_DAYS],
-        order: 1,
+        order: 3,
         routineCategoryId: "before-bed",
       },
       notes:
@@ -522,14 +600,162 @@ function createStarterMedicationPlan(): Medication[] {
         dayMode: "daily",
         times: [],
         days: [...ALL_DAYS],
+        order: 4,
+        routineCategoryId: "before-bed",
+      },
+      notes:
+        "Night scalp treatment. Apply 15 drops to a dry scalp as your current plan says. Let it dry fully before lying down, and do not exceed your doctor or product-label directions.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Dental floss - night",
+      dosage: "1",
+      unit: "session",
+      category: "dental-care",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
         order: 1,
         routineCategoryId: "before-bed",
       },
       notes:
-        "Night scalp treatment. Apply 15 drops to the scalp as your current plan says, ideally when the scalp is dry. Let it dry fully before lying down, and do not exceed your doctor or product-label directions.",
+        "Night interdental cleaning. Floss once daily; doing it before brushing can remove debris between teeth so brushing can finish the routine more cleanly.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Oral-B Electric Tooth Brushing - before bed",
+      dosage: "1",
+      unit: "session",
+      category: "dental-care",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 2,
+        routineCategoryId: "before-bed",
+      },
+      notes:
+        "Night dental care. Brush for two minutes with fluoride toothpaste before sleep. This is separated from floss so each habit can be tracked.",
       isActive: true,
     },
   ];
+}
+
+const PERSONAL_PLAN_NAME_MIGRATIONS: Record<string, string> = {
+  [normalizeMedicationName("Liv.52 Tablet")]: "Liv.52 Tablet - lunch dose",
+};
+
+function mergePersonalMedicationPlan(
+  currentMedications: Medication[],
+  shouldUpdateKnownItems: boolean,
+) {
+  const planMedications = createStarterMedicationPlan();
+  const planByName = new Map(
+    planMedications.map((medication) => [
+      normalizeMedicationName(medication.name),
+      medication,
+    ]),
+  );
+  const nextMedications = currentMedications.map((medication) => {
+    const normalizedName = normalizeMedicationName(medication.name);
+    const migratedName = PERSONAL_PLAN_NAME_MIGRATIONS[normalizedName];
+    const planMedication = migratedName
+      ? planByName.get(normalizeMedicationName(migratedName))
+      : planByName.get(normalizedName);
+
+    if (!planMedication || !shouldUpdateKnownItems || !medication.isActive) {
+      return medication;
+    }
+
+    return {
+      ...planMedication,
+      id: medication.id,
+      isActive: medication.isActive,
+    };
+  });
+  const activeNames = new Set(
+    nextMedications
+      .filter((medication) => medication.isActive)
+      .map((medication) => normalizeMedicationName(medication.name)),
+  );
+  const missingPlanMedications = planMedications.filter(
+    (medication) => !activeNames.has(normalizeMedicationName(medication.name)),
+  );
+
+  return [...nextMedications, ...missingPlanMedications];
+}
+
+function getDateKey(date: Date) {
+  return format(date, "yyyy-MM-dd");
+}
+
+function getDateFromKey(dateKey: string) {
+  const date = parseISO(dateKey);
+  return isValid(date) ? date : null;
+}
+
+function getDefaultCareDayKey(now: Date) {
+  return getDateKey(now.getHours() < AUTO_ROLLOVER_HOUR ? subDays(now, 1) : now);
+}
+
+function getCareDayRolloverAt(careDayKey: string) {
+  const careDayDate = getDateFromKey(careDayKey);
+
+  if (!careDayDate) {
+    return null;
+  }
+
+  const rolloverAt = addDays(careDayDate, 1);
+  rolloverAt.setHours(AUTO_ROLLOVER_HOUR, 0, 0, 0);
+  return rolloverAt;
+}
+
+function resolveCareDayKey(storedCareDayKey: string, now: Date) {
+  const storedCareDayDate = getDateFromKey(storedCareDayKey);
+  const rolloverAt = getCareDayRolloverAt(storedCareDayKey);
+
+  if (!storedCareDayDate || !rolloverAt) {
+    return getDefaultCareDayKey(now);
+  }
+
+  if (storedCareDayDate.getTime() > addDays(now, 1).getTime()) {
+    return getDefaultCareDayKey(now);
+  }
+
+  return now.getTime() < rolloverAt.getTime()
+    ? storedCareDayKey
+    : getDefaultCareDayKey(now);
+}
+
+function getNextCareDayKey(careDayKey: string) {
+  const careDayDate = getDateFromKey(careDayKey) ?? new Date();
+  return getDateKey(addDays(careDayDate, 1));
+}
+
+function normalizeReminderSettings(value: unknown): ReminderSettings {
+  if (!isRecord(value)) {
+    return DEFAULT_REMINDER_SETTINGS;
+  }
+
+  const reminderTimes = { ...DEFAULT_REMINDER_SETTINGS.reminderTimes };
+
+  if (isRecord(value.reminderTimes)) {
+    Object.entries(value.reminderTimes).forEach(([routineCategoryId, time]) => {
+      if (time === "" || normalizeTime(time)) {
+        reminderTimes[routineCategoryId] = String(time);
+      }
+    });
+  }
+
+  return {
+    browserNotifications: value.browserNotifications === true,
+    reminderTimes,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -828,6 +1054,60 @@ function writeStoredArray<T>(key: string, value: T[]) {
   }
 }
 
+function readStoredJson(key: string): unknown {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(key);
+    return rawValue ? JSON.parse(rawValue) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredJson(key: string, value: unknown) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    toast.error("Unable to save changes in this browser session");
+  }
+}
+
+function readStoredString(key: string) {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  try {
+    return window.localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredString(key: string, value: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    toast.error("Unable to save changes in this browser session");
+  }
+}
+
+function readStoredNumber(key: string) {
+  const value = Number(readStoredString(key));
+  return Number.isFinite(value) ? value : 0;
+}
+
 function readStoredAuth() {
   if (typeof window === "undefined") {
     return false;
@@ -860,6 +1140,14 @@ function writeStoredAuth(shouldStaySignedIn: boolean) {
 function formatLogDate(value: string) {
   try {
     return format(parseISO(value), "MMM d, yyyy h:mm a");
+  } catch {
+    return value;
+  }
+}
+
+function formatCareDayDate(value: string) {
+  try {
+    return format(parseISO(value), "MMM d, yyyy");
   } catch {
     return value;
   }
@@ -991,6 +1279,118 @@ function isTodayMedicationTaken(
   });
 }
 
+function buildMedicationEntriesForDate(
+  activeMedications: Medication[],
+  logs: IntakeLog[],
+  date: Date,
+  dateKey: string,
+) {
+  const entries: TodayMedication[] = [];
+
+  activeMedications
+    .filter((medication) => isMedicationDueOnDate(medication, date))
+    .forEach((medication) => {
+      const scheduleType = getMedicationScheduleType(medication);
+
+      if (scheduleType === "timed") {
+        medication.schedule.times.forEach((time) => {
+          entries.push({
+            medication,
+            scheduleType,
+            time,
+            order: null,
+            routineCategoryId: null,
+            isTaken: isTodayMedicationTaken(
+              logs,
+              medication,
+              scheduleType,
+              dateKey,
+              time,
+            ),
+          });
+        });
+        return;
+      }
+
+      entries.push({
+        medication,
+        scheduleType,
+        time: null,
+        order: getMedicationOrder(medication),
+        routineCategoryId: getMedicationRoutineCategoryId(medication),
+        isTaken: isTodayMedicationTaken(
+          logs,
+          medication,
+          scheduleType,
+          dateKey,
+          null,
+        ),
+      });
+    });
+
+  return entries.sort((first, second) => {
+    if (first.scheduleType !== second.scheduleType) {
+      return first.scheduleType === "timed" ? -1 : 1;
+    }
+
+    if (first.scheduleType === "timed" && second.scheduleType === "timed") {
+      return (first.time ?? "").localeCompare(second.time ?? "");
+    }
+
+    const firstRoutine = first.routineCategoryId ?? DEFAULT_ROUTINE_CATEGORY_ID;
+    const secondRoutine = second.routineCategoryId ?? DEFAULT_ROUTINE_CATEGORY_ID;
+
+    return (
+      firstRoutine.localeCompare(secondRoutine) ||
+      (first.order ?? 1) - (second.order ?? 1) ||
+      first.medication.name.localeCompare(second.medication.name)
+    );
+  });
+}
+
+function getAdherenceStats(
+  activeMedications: Medication[],
+  logs: IntakeLog[],
+  endDate: Date,
+) {
+  let due = 0;
+  let taken = 0;
+  let streak = 0;
+  let isStreakOpen = true;
+
+  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+    const date = subDays(endDate, dayOffset);
+    const dateKey = getDateKey(date);
+    const entries = buildMedicationEntriesForDate(
+      activeMedications,
+      logs,
+      date,
+      dateKey,
+    );
+    const dayDue = entries.length;
+    const dayTaken = entries.filter((entry) => entry.isTaken).length;
+
+    due += dayDue;
+    taken += dayTaken;
+
+    if (isStreakOpen && dayDue > 0 && dayTaken === dayDue) {
+      streak += 1;
+      continue;
+    }
+
+    if (dayDue > 0) {
+      isStreakOpen = false;
+    }
+  }
+
+  return {
+    due,
+    taken,
+    rate: due === 0 ? 0 : Math.round((taken / due) * 100),
+    streak,
+  };
+}
+
 function getEntryScheduleLabel(
   entry: TodayMedication,
   routineCategories: RoutineCategory[],
@@ -1061,10 +1461,23 @@ export default function MedTrackApp() {
   const [routineCategoryForm, setRoutineCategoryForm] =
     useState<RoutineCategoryFormState>(() => createEmptyRoutineCategoryForm());
   const [today, setToday] = useState<Date | null>(null);
+  const [careDayKey, setCareDayKey] = useState("");
+  const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(
+    DEFAULT_REMINDER_SETTINGS,
+  );
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("unsupported");
   const [isStorageReady, setIsStorageReady] = useState(false);
+  const notifiedReminderKeys = useRef<Set<string>>(new Set());
 
-  const todayKey = today ? format(today, "yyyy-MM-dd") : "";
-  const todayLabel = today ? format(today, "EEEE, MMMM d") : "";
+  const careDayDate = useMemo(
+    () => (careDayKey ? getDateFromKey(careDayKey) : null),
+    [careDayKey],
+  );
+  const todayKey = careDayKey;
+  const todayLabel = careDayDate ? format(careDayDate, "EEEE, MMMM d") : "";
+  const currentClockLabel = today ? format(today, "h:mm a") : "";
 
   useEffect(() => {
     let isCancelled = false;
@@ -1073,12 +1486,22 @@ export default function MedTrackApp() {
         return;
       }
 
+      const now = new Date();
+      const storedPlanVersion = readStoredNumber(
+        PERSONAL_PLAN_VERSION_STORAGE_KEY,
+      );
+      const storedCareDayKey = readStoredString(CARE_DAY_STORAGE_KEY);
+      const nextCareDayKey = resolveCareDayKey(storedCareDayKey, now);
+      const shouldUpdatePersonalPlan =
+        storedPlanVersion < PERSONAL_PLAN_VERSION;
+
       setIsAuthenticated(readStoredAuth());
       const storedMedications = readStoredArray<Medication>(
         MEDICATIONS_STORAGE_KEY,
         normalizeMedication,
       );
-      const shouldLoadStarterPlan = storedMedications.length === 0;
+      const shouldLoadStarterPlan =
+        storedMedications.length === 0 || shouldUpdatePersonalPlan;
       const storedCategories = getStoredOrDefault<MedicationCategoryOption>(
         CATEGORIES_STORAGE_KEY,
         normalizeMedicationCategoryOption,
@@ -1092,7 +1515,10 @@ export default function MedTrackApp() {
 
       setMedications(
         shouldLoadStarterPlan
-          ? createStarterMedicationPlan()
+          ? mergePersonalMedicationPlan(
+              storedMedications,
+              shouldUpdatePersonalPlan,
+            )
           : storedMedications,
       );
       setLogs(readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog));
@@ -1108,7 +1534,20 @@ export default function MedTrackApp() {
             : storedRoutineCategories
         ).sort((first, second) => first.sortOrder - second.sortOrder),
       );
-      setToday(new Date());
+      setReminderSettings(
+        normalizeReminderSettings(readStoredJson(REMINDER_SETTINGS_STORAGE_KEY)),
+      );
+      setNotificationPermission(
+        typeof Notification === "undefined"
+          ? "unsupported"
+          : Notification.permission,
+      );
+      setToday(now);
+      setCareDayKey(nextCareDayKey);
+      writeStoredString(
+        PERSONAL_PLAN_VERSION_STORAGE_KEY,
+        String(PERSONAL_PLAN_VERSION),
+      );
       setIsStorageReady(true);
     }, 0);
 
@@ -1151,10 +1590,29 @@ export default function MedTrackApp() {
   }, [isStorageReady, routineCategories]);
 
   useEffect(() => {
-    const intervalId = window.setInterval(
-      () => setToday(new Date()),
-      60 * 1000,
-    );
+    if (!isStorageReady || !careDayKey) {
+      return;
+    }
+
+    writeStoredString(CARE_DAY_STORAGE_KEY, careDayKey);
+  }, [careDayKey, isStorageReady]);
+
+  useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
+    writeStoredJson(REMINDER_SETTINGS_STORAGE_KEY, reminderSettings);
+  }, [isStorageReady, reminderSettings]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const now = new Date();
+      setToday(now);
+      setCareDayKey((currentCareDayKey) =>
+        resolveCareDayKey(currentCareDayKey, now),
+      );
+    }, 60 * 1000);
 
     return () => window.clearInterval(intervalId);
   }, []);
@@ -1199,69 +1657,17 @@ export default function MedTrackApp() {
   );
 
   const todayMedications = useMemo<TodayMedication[]>(() => {
-    if (!today) {
+    if (!careDayDate || !todayKey) {
       return [];
     }
 
-    const entries: TodayMedication[] = [];
-
-    activeMedications
-      .filter((medication) => isMedicationDueOnDate(medication, today))
-      .forEach((medication) => {
-        const scheduleType = getMedicationScheduleType(medication);
-
-        if (scheduleType === "timed") {
-          medication.schedule.times.forEach((time) => {
-            entries.push({
-              medication,
-              scheduleType,
-              time,
-              order: null,
-              routineCategoryId: null,
-              isTaken: isTodayMedicationTaken(
-                logs,
-                medication,
-                scheduleType,
-                todayKey,
-                time,
-              ),
-            });
-          });
-          return;
-        }
-
-        entries.push({
-          medication,
-          scheduleType,
-          time: null,
-          order: getMedicationOrder(medication),
-          routineCategoryId: getMedicationRoutineCategoryId(medication),
-          isTaken: isTodayMedicationTaken(
-            logs,
-            medication,
-            scheduleType,
-            todayKey,
-            null,
-          ),
-        });
-      });
-
-    return entries
-      .sort((first, second) => {
-        if (first.scheduleType !== second.scheduleType) {
-          return first.scheduleType === "timed" ? -1 : 1;
-        }
-
-        if (first.scheduleType === "timed" && second.scheduleType === "timed") {
-          return (first.time ?? "").localeCompare(second.time ?? "");
-        }
-
-        return (
-          (first.order ?? 1) - (second.order ?? 1) ||
-          first.medication.name.localeCompare(second.medication.name)
-        );
-      });
-  }, [activeMedications, logs, today, todayKey]);
+    return buildMedicationEntriesForDate(
+      activeMedications,
+      logs,
+      careDayDate,
+      todayKey,
+    );
+  }, [activeMedications, careDayDate, logs, todayKey]);
 
   const sortedLogs = useMemo(
     () =>
@@ -1275,6 +1681,16 @@ export default function MedTrackApp() {
   const takenTodayCount = todayMedications.filter(
     (medication) => medication.isTaken,
   ).length;
+
+  const adherenceStats = useMemo<AdherenceStats>(
+    () =>
+      getAdherenceStats(
+        activeMedications,
+        logs,
+        careDayDate ?? today ?? new Date(),
+      ),
+    [activeMedications, careDayDate, logs, today],
+  );
 
   const orderedMedicationGroups = useMemo<OrderedMedicationGroup[]>(() => {
     const groups = new Map<string, TodayMedication[]>();
@@ -1328,6 +1744,57 @@ export default function MedTrackApp() {
       });
   }, [routineCategories, todayMedications]);
 
+  const pendingTodayCount = todayMedications.length - takenTodayCount;
+
+  useEffect(() => {
+    if (
+      !isStorageReady ||
+      !today ||
+      !todayKey ||
+      !reminderSettings.browserNotifications
+    ) {
+      return;
+    }
+
+    const currentTime = format(today, "HH:mm");
+
+    orderedMedicationGroups
+      .filter((group) => !group.isTaken)
+      .forEach((group) => {
+        const reminderTime = reminderSettings.reminderTimes[group.routineCategoryId];
+        const notificationKey = `${todayKey}:${group.routineCategoryId}:${group.order}:${reminderTime}`;
+
+        if (
+          !reminderTime ||
+          reminderTime !== currentTime ||
+          notifiedReminderKeys.current.has(notificationKey)
+        ) {
+          return;
+        }
+
+        notifiedReminderKeys.current.add(notificationKey);
+        toast.info(
+          `${group.routineCategoryName}: ${group.entries.length - group.takenCount} pending item(s)`,
+        );
+
+        if (
+          typeof Notification !== "undefined" &&
+          Notification.permission === "granted"
+        ) {
+          new Notification("MedTrack reminder", {
+            body: `${group.routineCategoryName}: ${group.entries.length - group.takenCount} item(s) still pending.`,
+          });
+        }
+      });
+  }, [
+    isStorageReady,
+    orderedMedicationGroups,
+    reminderSettings.browserNotifications,
+    reminderSettings.reminderTimes,
+    today,
+    todayKey,
+  ]);
+
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1350,6 +1817,67 @@ export default function MedTrackApp() {
     setPassword("");
     setActiveTab("dashboard");
     toast.success("Signed out");
+  }
+
+  function handleEndCareDay() {
+    if (!todayKey) {
+      toast.error("The care day is still loading");
+      return;
+    }
+
+    const nextCareDayKey = getNextCareDayKey(todayKey);
+    setCareDayKey(nextCareDayKey);
+    notifiedReminderKeys.current.clear();
+    toast.success(`Care day moved to ${format(parseISO(nextCareDayKey), "MMM d")}`);
+  }
+
+  async function handleEnableNotifications() {
+    if (typeof Notification === "undefined") {
+      setNotificationPermission("unsupported");
+      toast.error("Browser notifications are not supported here");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+
+    if (permission === "granted") {
+      setReminderSettings((currentSettings) => ({
+        ...currentSettings,
+        browserNotifications: true,
+      }));
+      toast.success("Browser reminders enabled");
+      return;
+    }
+
+    toast.error("Notifications are blocked by the browser");
+  }
+
+  function handleToggleBrowserNotifications(isEnabled: boolean) {
+    if (isEnabled && notificationPermission !== "granted") {
+      void handleEnableNotifications();
+      return;
+    }
+
+    setReminderSettings((currentSettings) => ({
+      ...currentSettings,
+      browserNotifications: isEnabled,
+    }));
+  }
+
+  function handleReminderTimeChange(routineCategoryId: string, time: string) {
+    if (time && !normalizeTime(time)) {
+      toast.error("Use a valid reminder time");
+      return;
+    }
+
+    setReminderSettings((currentSettings) => ({
+      ...currentSettings,
+      reminderTimes: {
+        ...currentSettings.reminderTimes,
+        [routineCategoryId]: time,
+      },
+    }));
   }
 
   function resetForm() {
@@ -1621,16 +2149,7 @@ export default function MedTrackApp() {
   }
 
   function handleImportStarterPlan() {
-    const starterMedications = createStarterMedicationPlan();
-    const activeMedicationNames = new Set(
-      medications
-        .filter((medication) => medication.isActive)
-        .map((medication) => normalizeMedicationName(medication.name)),
-    );
-    const medicationsToAdd = starterMedications.filter(
-      (medication) =>
-        !activeMedicationNames.has(normalizeMedicationName(medication.name)),
-    );
+    const nextMedications = mergePersonalMedicationPlan(medications, true);
 
     setCategories((currentCategories) =>
       ensureItemsById(currentCategories, DEFAULT_MEDICATION_CATEGORIES),
@@ -1640,17 +2159,18 @@ export default function MedTrackApp() {
         (first, second) => first.sortOrder - second.sortOrder,
       ),
     );
+    writeStoredString(
+      PERSONAL_PLAN_VERSION_STORAGE_KEY,
+      String(PERSONAL_PLAN_VERSION),
+    );
 
-    if (medicationsToAdd.length === 0) {
-      toast.error("Starter plan is already in your active medications");
+    if (JSON.stringify(nextMedications) === JSON.stringify(medications)) {
+      toast.error("Personal plan is already up to date");
       return;
     }
 
-    setMedications((currentMedications) => [
-      ...currentMedications,
-      ...medicationsToAdd,
-    ]);
-    toast.success(`${medicationsToAdd.length} starter medications added`);
+    setMedications(nextMedications);
+    toast.success("Personal plan updated");
   }
 
   function handleMedicationSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1838,7 +2358,58 @@ export default function MedTrackApp() {
     toast.success("Step marked as taken");
   }
 
-  if (!isStorageReady || !today) {
+  function handleMarkPastAsTaken(entry: TodayMedication, dateKey: string) {
+    if (entry.isTaken) {
+      toast.error("This dose is already marked as taken for that care day");
+      return;
+    }
+
+    const routineCategory =
+      entry.scheduleType === "ordered"
+        ? getRoutineCategoryOption(routineCategories, entry.routineCategoryId)
+        : null;
+    const log: IntakeLog = {
+      id: createId(),
+      medicationId: entry.medication.id,
+      medicationName: entry.medication.name,
+      dosage: entry.medication.dosage,
+      unit: entry.medication.unit,
+      category: entry.medication.category,
+      scheduleType: entry.scheduleType,
+      scheduledTime: entry.scheduleType === "timed" ? entry.time : null,
+      order: entry.scheduleType === "ordered" ? entry.order ?? 1 : undefined,
+      routineCategoryId:
+        entry.scheduleType === "ordered"
+          ? routineCategory?.id ?? DEFAULT_ROUTINE_CATEGORY_ID
+          : undefined,
+      routineCategoryName:
+        entry.scheduleType === "ordered" ? routineCategory?.name : undefined,
+      takenAt: new Date().toISOString(),
+      date: dateKey,
+      status: "taken",
+      notes: "Backfilled from History",
+    };
+
+    setLogs((currentLogs) => [log, ...currentLogs]);
+    toast.success(`${entry.medication.name} backfilled`);
+  }
+
+  function handleDeleteLog(log: IntakeLog) {
+    const shouldDelete = window.confirm(
+      `Delete the history log for ${log.medicationName}?`,
+    );
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setLogs((currentLogs) =>
+      currentLogs.filter((currentLog) => currentLog.id !== log.id),
+    );
+    toast.success("History log deleted");
+  }
+
+  if (!isStorageReady || !today || !todayKey || !careDayDate) {
     return <MedTrackLoading />;
   }
 
@@ -1962,12 +2533,18 @@ export default function MedTrackApp() {
               todayMedications={todayMedications}
               orderedMedicationGroups={orderedMedicationGroups}
               takenTodayCount={takenTodayCount}
+              pendingTodayCount={pendingTodayCount}
               logCount={logs.length}
+              careDayLabel={todayLabel}
+              currentClockLabel={currentClockLabel}
+              adherenceStats={adherenceStats}
+              reminderSettings={reminderSettings}
               categories={categories}
               routineCategories={routineCategories}
               onMarkAsTaken={handleMarkAsTaken}
               onMarkGroupAsTaken={handleMarkGroupAsTaken}
               onAddMedication={() => setActiveTab("add")}
+              onEndCareDay={handleEndCareDay}
             />
           )}
 
@@ -2003,8 +2580,12 @@ export default function MedTrackApp() {
           {activeTab === "history" && (
             <HistoryView
               logs={sortedLogs}
+              activeMedications={activeMedications}
+              careDayKey={todayKey}
               categories={categories}
               routineCategories={routineCategories}
+              onMarkPastAsTaken={handleMarkPastAsTaken}
+              onDeleteLog={handleDeleteLog}
             />
           )}
 
@@ -2014,8 +2595,13 @@ export default function MedTrackApp() {
               routineCategories={routineCategories}
               categoryForm={categoryForm}
               routineCategoryForm={routineCategoryForm}
+              reminderSettings={reminderSettings}
+              notificationPermission={notificationPermission}
               setCategoryForm={setCategoryForm}
               setRoutineCategoryForm={setRoutineCategoryForm}
+              onReminderTimeChange={handleReminderTimeChange}
+              onToggleBrowserNotifications={handleToggleBrowserNotifications}
+              onEnableNotifications={handleEnableNotifications}
               onCategorySubmit={handleCategorySubmit}
               onRoutineCategorySubmit={handleRoutineCategorySubmit}
               onEditCategory={handleEditCategory}
@@ -2038,44 +2624,110 @@ function DashboardView({
   todayMedications,
   orderedMedicationGroups,
   takenTodayCount,
+  pendingTodayCount,
   logCount,
+  careDayLabel,
+  currentClockLabel,
+  adherenceStats,
+  reminderSettings,
   categories,
   routineCategories,
   onMarkAsTaken,
   onMarkGroupAsTaken,
   onAddMedication,
+  onEndCareDay,
 }: {
   activeMedicationCount: number;
   todayMedications: TodayMedication[];
   orderedMedicationGroups: OrderedMedicationGroup[];
   takenTodayCount: number;
+  pendingTodayCount: number;
   logCount: number;
+  careDayLabel: string;
+  currentClockLabel: string;
+  adherenceStats: AdherenceStats;
+  reminderSettings: ReminderSettings;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
   onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
+  onEndCareDay: () => void;
 }) {
   const timedMedications = todayMedications.filter(
     (entry) => entry.scheduleType === "timed",
   );
+  const orderedSections = routineCategories
+    .map((routineCategory) => ({
+      routineCategory,
+      groups: orderedMedicationGroups.filter(
+        (group) => group.routineCategoryId === routineCategory.id,
+      ),
+    }))
+    .filter((section) => section.groups.length > 0);
+  const completionRate =
+    todayMedications.length === 0
+      ? 0
+      : Math.round((takenTodayCount / todayMedications.length) * 100);
+  const pendingGroups = orderedMedicationGroups.filter((group) => !group.isTaken);
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="mx-auto max-w-7xl">
       <PageHeader
         title="Dashboard"
-        description="Today's schedule and progress"
+        description="Care-day schedule and progress"
         action={
-          <button
-            className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
-            type="button"
-            onClick={onAddMedication}
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Add medication
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50"
+              type="button"
+              onClick={onEndCareDay}
+            >
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              End care day
+            </button>
+            <button
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+              type="button"
+              onClick={onAddMedication}
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Add medication
+            </button>
+          </div>
         }
       />
+
+      <section className="mb-4 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-xl font-semibold text-white">
+              {completionRate}%
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-semibold text-zinc-950">
+                  {careDayLabel}
+                </h2>
+                <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800">
+                  Care day
+                </span>
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-zinc-500">
+                Current clock: {currentClockLabel}. This care day stays open
+                past midnight and rolls over automatically after noon tomorrow,
+                unless you end it manually.
+              </p>
+            </div>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-zinc-100 lg:w-64">
+            <div
+              className="h-full rounded-full bg-emerald-600 transition-all"
+              style={{ width: `${completionRate}%` }}
+            />
+          </div>
+        </div>
+      </section>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile
@@ -2091,122 +2743,234 @@ function DashboardView({
           tone="sky"
         />
         <StatTile
-          icon={Pill}
-          label="Active meds"
-          value={activeMedicationCount}
+          icon={AlarmClock}
+          label="Still pending"
+          value={pendingTodayCount}
           tone="rose"
         />
         <StatTile
-          icon={Activity}
-          label="History logs"
-          value={logCount}
+          icon={BarChart3}
+          label="7-day adherence"
+          value={`${adherenceStats.rate}%`}
           tone="amber"
         />
       </div>
 
-      <section className="mt-6 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold text-zinc-950">
-              Today&apos;s Medications
-            </h2>
-            <p className="text-sm text-zinc-500">
-              {takenTodayCount} of {todayMedications.length} doses completed
-            </p>
+      <div className="mt-6 grid gap-5 xl:grid-cols-[1fr_22rem]">
+        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-950">
+                Care Checklist
+              </h2>
+              <p className="text-sm text-zinc-500">
+                {takenTodayCount} of {todayMedications.length} items completed
+              </p>
+            </div>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+              <ClipboardList className="h-5 w-5" aria-hidden="true" />
+            </div>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
-            <Clock3 className="h-5 w-5" aria-hidden="true" />
-          </div>
-        </div>
 
-        {todayMedications.length === 0 ? (
-          <EmptyState
-            icon={Pill}
-            title="No medications scheduled today"
-            description="Add a medication to build today's schedule."
-            actionLabel="Add medication"
-            onAction={onAddMedication}
-          />
-        ) : (
-          <div className="space-y-5">
-            {timedMedications.length > 0 && (
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-normal text-zinc-500">
-                  Timed doses
-                </h3>
-                {timedMedications.map((entry) => (
-                  <MedicationDoseCard
-                    key={getTodayMedicationKey(entry)}
-                    entry={entry}
-                    categories={categories}
-                    routineCategories={routineCategories}
-                    onMarkAsTaken={onMarkAsTaken}
-                  />
-                ))}
+          {todayMedications.length === 0 ? (
+            <EmptyState
+              icon={Pill}
+              title="No items scheduled today"
+              description="Add a medication or care routine to build today's checklist."
+              actionLabel="Add medication"
+              onAction={onAddMedication}
+            />
+          ) : (
+            <div className="space-y-4">
+              {timedMedications.length > 0 && (
+                <section className="rounded-lg border border-zinc-200 p-3">
+                  <h3 className="mb-3 text-sm font-semibold uppercase tracking-normal text-zinc-500">
+                    Timed doses
+                  </h3>
+                  <div className="space-y-2">
+                    {timedMedications.map((entry) => (
+                      <MedicationDoseCard
+                        key={getTodayMedicationKey(entry)}
+                        entry={entry}
+                        categories={categories}
+                        routineCategories={routineCategories}
+                        onMarkAsTaken={onMarkAsTaken}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {orderedSections.map((section) => (
+                <RoutineChecklistSection
+                  key={section.routineCategory.id}
+                  routineCategory={section.routineCategory}
+                  groups={section.groups}
+                  categories={categories}
+                  routineCategories={routineCategories}
+                  onMarkAsTaken={onMarkAsTaken}
+                  onMarkGroupAsTaken={onMarkGroupAsTaken}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <aside className="space-y-5">
+          <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-emerald-700" />
+              <h2 className="font-semibold text-zinc-950">Reports</h2>
+            </div>
+            <dl className="mt-4 space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
+                <dt className="text-zinc-500">Active items</dt>
+                <dd className="font-semibold text-zinc-900">
+                  {activeMedicationCount}
+                </dd>
               </div>
-            )}
+              <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
+                <dt className="text-zinc-500">History logs</dt>
+                <dd className="font-semibold text-zinc-900">{logCount}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
+                <dt className="text-zinc-500">7-day taken</dt>
+                <dd className="font-semibold text-zinc-900">
+                  {adherenceStats.taken}/{adherenceStats.due}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
+                <dt className="text-zinc-500">Perfect-day streak</dt>
+                <dd className="font-semibold text-zinc-900">
+                  {adherenceStats.streak}
+                </dd>
+              </div>
+            </dl>
+          </section>
 
-            {orderedMedicationGroups.length > 0 && (
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-normal text-zinc-500">
-                  Routine order
-                </h3>
-                {orderedMedicationGroups.map((group) => (
-                  <article
-                    key={`order-${group.routineCategoryId}-${group.order}`}
-                    className="rounded-lg border border-zinc-200 bg-white p-4"
+          <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <BellRing className="h-4 w-4 text-amber-700" />
+              <h2 className="font-semibold text-zinc-950">Reminders</h2>
+            </div>
+            <div className="mt-4 space-y-2">
+              {pendingGroups.length === 0 ? (
+                <p className="rounded-md bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
+                  Everything scheduled for this care day is done.
+                </p>
+              ) : (
+                pendingGroups.slice(0, 5).map((group) => (
+                  <div
+                    key={`pending-${group.routineCategoryId}-${group.order}`}
+                    className="rounded-md border border-zinc-200 p-3 text-sm"
                   >
-                    <div className="flex flex-col gap-3 border-b border-zinc-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="font-semibold text-zinc-950">
-                            Step {group.order}
-                          </h4>
-                          {group.entries.length > 1 && (
-                            <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-800">
-                              Use together
-                            </span>
-                          )}
-                        </div>
-                        <p className="mt-1 text-sm text-zinc-500">
-                          {group.routineCategoryName}
-                        </p>
-                      </div>
-                      <button
-                        className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
-                          group.isTaken
-                            ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "bg-emerald-600 text-white hover:bg-emerald-700"
-                        }`}
-                        type="button"
-                        onClick={() => onMarkGroupAsTaken(group.entries)}
-                        disabled={group.isTaken}
-                      >
-                        <Check className="h-4 w-4" aria-hidden="true" />
-                        {group.isTaken ? "Step taken" : "Mark Step as Taken"}
-                      </button>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold text-zinc-900">
+                        {group.routineCategoryName}
+                      </span>
+                      <span className="text-xs font-semibold text-zinc-500">
+                        {reminderSettings.reminderTimes[group.routineCategoryId] ||
+                          "No time"}
+                      </span>
                     </div>
-
-                    <div className="mt-3 space-y-3">
-                      {group.entries.map((entry) => (
-                        <MedicationDoseCard
-                          key={getTodayMedicationKey(entry)}
-                          entry={entry}
-                          categories={categories}
-                          routineCategories={routineCategories}
-                          onMarkAsTaken={onMarkAsTaken}
-                          compact
-                        />
-                      ))}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+                    <p className="mt-1 text-zinc-500">
+                      Step {group.order}: {group.entries.length - group.takenCount}{" "}
+                      pending
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </aside>
+      </div>
     </div>
+  );
+}
+
+function RoutineChecklistSection({
+  routineCategory,
+  groups,
+  categories,
+  routineCategories,
+  onMarkAsTaken,
+  onMarkGroupAsTaken,
+}: {
+  routineCategory: RoutineCategory;
+  groups: OrderedMedicationGroup[];
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
+  onMarkAsTaken: (entry: TodayMedication) => void;
+  onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
+}) {
+  const totalEntries = groups.reduce(
+    (sum, group) => sum + group.entries.length,
+    0,
+  );
+  const totalTaken = groups.reduce((sum, group) => sum + group.takenCount, 0);
+
+  return (
+    <section className="rounded-lg border border-zinc-200 bg-white">
+      <div className="flex flex-col gap-3 border-b border-zinc-100 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <RoutineCategoryBadge category={routineCategory} />
+          <span className="text-sm font-semibold text-zinc-500">
+            {totalTaken}/{totalEntries}
+          </span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-zinc-100 sm:w-40">
+          <div
+            className="h-full rounded-full bg-emerald-600"
+            style={{
+              width: `${totalEntries === 0 ? 0 : Math.round((totalTaken / totalEntries) * 100)}%`,
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="space-y-3 p-3">
+        {groups.map((group) => (
+          <div key={`${group.routineCategoryId}-${group.order}`}>
+            <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700">
+                  Step {group.order}
+                </span>
+                {group.entries.length > 1 && (
+                  <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-800">
+                    Use together
+                  </span>
+                )}
+              </div>
+              <button
+                className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                  group.isTaken
+                    ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                }`}
+                type="button"
+                onClick={() => onMarkGroupAsTaken(group.entries)}
+                disabled={group.isTaken}
+              >
+                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                {group.isTaken ? "Done" : "Mark step"}
+              </button>
+            </div>
+            <div className="space-y-2">
+              {group.entries.map((entry) => (
+                <MedicationDoseCard
+                  key={getTodayMedicationKey(entry)}
+                  entry={entry}
+                  categories={categories}
+                  routineCategories={routineCategories}
+                  onMarkAsTaken={onMarkAsTaken}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -2215,13 +2979,11 @@ function MedicationDoseCard({
   categories,
   routineCategories,
   onMarkAsTaken,
-  compact = false,
 }: {
   entry: TodayMedication;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
-  compact?: boolean;
 }) {
   const medicationCategory = getMedicationCategoryOption(
     categories,
@@ -2231,53 +2993,66 @@ function MedicationDoseCard({
 
   return (
     <div
-      className={`flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white ${
-        compact ? "p-3" : "p-4"
-      } sm:flex-row sm:items-center sm:justify-between`}
+      className={`grid gap-3 rounded-md border p-3 transition sm:grid-cols-[auto_1fr_auto] sm:items-start ${
+        entry.isTaken
+          ? "border-emerald-200 bg-emerald-50/60"
+          : "border-zinc-200 bg-white hover:border-emerald-200"
+      }`}
     >
-      <div className="flex gap-3">
-        <div
-          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${
-            toneClasses.iconClassName
-          }`}
-        >
-          <Pill className="h-5 w-5" aria-hidden="true" />
-        </div>
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-semibold text-zinc-950">
-              {entry.medication.name}
-            </h3>
-            <CategoryBadge
-              categoryId={entry.medication.category}
-              categories={categories}
-            />
-          </div>
-          <p className="mt-1 text-sm text-zinc-600">
-            {entry.medication.dosage} {entry.medication.unit}{" "}
-            {getEntryScheduleLabel(entry, routineCategories)}
-          </p>
-          {entry.medication.notes && (
-            <p className="mt-1 text-sm text-zinc-500">
-              {entry.medication.notes}
-            </p>
-          )}
-        </div>
-      </div>
-
       <button
-        className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
+        className={`flex h-10 w-10 items-center justify-center rounded-md transition ${
           entry.isTaken
-            ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-            : "bg-emerald-600 text-white hover:bg-emerald-700"
+            ? "bg-emerald-600 text-white"
+            : `${toneClasses.iconClassName} hover:ring-2 hover:ring-emerald-100`
         }`}
         type="button"
         onClick={() => onMarkAsTaken(entry)}
         disabled={entry.isTaken}
+        title={entry.isTaken ? "Already taken" : "Mark as taken"}
+        aria-label={`Mark ${entry.medication.name} as taken`}
       >
-        <Check className="h-4 w-4" aria-hidden="true" />
-        {entry.isTaken ? "Taken" : "Mark as Taken"}
+        {entry.isTaken ? (
+          <Check className="h-5 w-5" aria-hidden="true" />
+        ) : (
+          <Pill className="h-5 w-5" aria-hidden="true" />
+        )}
       </button>
+
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3
+            className={`font-semibold ${
+              entry.isTaken ? "text-emerald-950" : "text-zinc-950"
+            }`}
+          >
+            {entry.medication.name}
+          </h3>
+          <CategoryBadge
+            categoryId={entry.medication.category}
+            categories={categories}
+          />
+        </div>
+        <p className="mt-1 text-sm text-zinc-600">
+          {entry.medication.dosage} {entry.medication.unit} -{" "}
+          {getEntryScheduleLabel(entry, routineCategories)}
+        </p>
+        {entry.medication.notes && (
+          <p className="mt-1 text-sm leading-5 text-zinc-500">
+            {entry.medication.notes}
+          </p>
+        )}
+      </div>
+
+      <span
+        className={`inline-flex w-fit items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
+          entry.isTaken
+            ? "bg-emerald-100 text-emerald-800"
+            : "bg-zinc-100 text-zinc-600"
+        }`}
+      >
+        <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+        {entry.isTaken ? "Taken" : "Pending"}
+      </span>
     </div>
   );
 }
@@ -2764,18 +3539,144 @@ function MedicationFormView({
 
 function HistoryView({
   logs,
+  activeMedications,
+  careDayKey,
   categories,
   routineCategories,
+  onMarkPastAsTaken,
+  onDeleteLog,
 }: {
   logs: IntakeLog[];
+  activeMedications: Medication[];
+  careDayKey: string;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
+  onMarkPastAsTaken: (entry: TodayMedication, dateKey: string) => void;
+  onDeleteLog: (log: IntakeLog) => void;
 }) {
+  const [selectedDate, setSelectedDate] = useState(careDayKey);
+  const selectedDateObject = getDateFromKey(selectedDate) ?? new Date();
+  const backfillEntries = buildMedicationEntriesForDate(
+    activeMedications,
+    logs,
+    selectedDateObject,
+    selectedDate,
+  );
+  const missingEntries = backfillEntries.filter((entry) => !entry.isTaken);
+
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-6xl">
       <PageHeader title="History" description="Past intake logs" />
 
+      <section className="mb-5 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-zinc-950">
+              Backfill a Care Day
+            </h2>
+            <p className="mt-1 text-sm text-zinc-500">
+              Pick a day, then mark anything you actually took but forgot to
+              check.
+            </p>
+          </div>
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-zinc-700">
+              Care day
+            </span>
+            <input
+              className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 sm:w-48"
+              type="date"
+              value={selectedDate}
+              onChange={(event) => setSelectedDate(event.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-normal text-zinc-500">
+              Scheduled
+            </p>
+            <p className="mt-1 text-2xl font-semibold text-zinc-950">
+              {backfillEntries.length}
+            </p>
+          </div>
+          <div className="rounded-md bg-emerald-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-normal text-emerald-700">
+              Already logged
+            </p>
+            <p className="mt-1 text-2xl font-semibold text-emerald-900">
+              {backfillEntries.length - missingEntries.length}
+            </p>
+          </div>
+          <div className="rounded-md bg-rose-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-normal text-rose-700">
+              Missing
+            </p>
+            <p className="mt-1 text-2xl font-semibold text-rose-900">
+              {missingEntries.length}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {backfillEntries.length === 0 ? (
+            <p className="rounded-md border border-zinc-200 p-3 text-sm text-zinc-500">
+              No scheduled items for this care day.
+            </p>
+          ) : (
+            backfillEntries.map((entry) => (
+              <div
+                key={`${selectedDate}-${getTodayMedicationKey(entry)}`}
+                className="flex flex-col gap-3 rounded-md border border-zinc-200 p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold text-zinc-950">
+                      {entry.medication.name}
+                    </h3>
+                    <CategoryBadge
+                      categoryId={entry.medication.category}
+                      categories={categories}
+                    />
+                  </div>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    {entry.medication.dosage} {entry.medication.unit} -{" "}
+                    {getEntryScheduleLabel(entry, routineCategories)}
+                  </p>
+                </div>
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition ${
+                    entry.isTaken
+                      ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "bg-emerald-600 text-white hover:bg-emerald-700"
+                  }`}
+                  type="button"
+                  disabled={entry.isTaken}
+                  onClick={() => onMarkPastAsTaken(entry, selectedDate)}
+                >
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                  {entry.isTaken ? "Logged" : "Backfill"}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
       <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-zinc-950">
+              Intake Logs
+            </h2>
+            <p className="text-sm text-zinc-500">
+              Delete a mistaken log or review past care days.
+            </p>
+          </div>
+          <History className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+        </div>
+
         {logs.length === 0 ? (
           <EmptyState
             icon={History}
@@ -2818,11 +3719,25 @@ function HistoryView({
                       {log.dosage} {log.unit} -{" "}
                       {getLogScheduleLabel(log, routineCategories)}
                     </p>
+                    <p className="mt-1 text-xs font-medium text-zinc-500">
+                      Care day: {formatCareDayDate(log.date)}
+                    </p>
                   </div>
                 </div>
-                <time className="text-sm font-medium text-zinc-500">
-                  {formatLogDate(log.takenAt)}
-                </time>
+                <div className="flex items-center gap-3">
+                  <time className="text-sm font-medium text-zinc-500">
+                    {formatLogDate(log.takenAt)}
+                  </time>
+                  <button
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    type="button"
+                    onClick={() => onDeleteLog(log)}
+                    title="Delete log"
+                    aria-label={`Delete history log for ${log.medicationName}`}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
                 </article>
               );
             })}
@@ -2838,8 +3753,13 @@ function SettingsView({
   routineCategories,
   categoryForm,
   routineCategoryForm,
+  reminderSettings,
+  notificationPermission,
   setCategoryForm,
   setRoutineCategoryForm,
+  onReminderTimeChange,
+  onToggleBrowserNotifications,
+  onEnableNotifications,
   onCategorySubmit,
   onRoutineCategorySubmit,
   onEditCategory,
@@ -2854,8 +3774,13 @@ function SettingsView({
   routineCategories: RoutineCategory[];
   categoryForm: CategoryFormState;
   routineCategoryForm: RoutineCategoryFormState;
+  reminderSettings: ReminderSettings;
+  notificationPermission: NotificationPermission | "unsupported";
   setCategoryForm: Dispatch<SetStateAction<CategoryFormState>>;
   setRoutineCategoryForm: Dispatch<SetStateAction<RoutineCategoryFormState>>;
+  onReminderTimeChange: (routineCategoryId: string, time: string) => void;
+  onToggleBrowserNotifications: (isEnabled: boolean) => void;
+  onEnableNotifications: () => void;
   onCategorySubmit: (event: FormEvent<HTMLFormElement>) => void;
   onRoutineCategorySubmit: (event: FormEvent<HTMLFormElement>) => void;
   onEditCategory: (category: MedicationCategoryOption) => void;
@@ -3085,6 +4010,72 @@ function SettingsView({
             ))}
           </div>
         </section>
+
+        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5 xl:col-span-2">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <Bell className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+                <h2 className="text-lg font-semibold text-zinc-950">
+                  Reminders and Alarms
+                </h2>
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-zinc-500">
+                In-app reminders always show as toast messages while MedTrack is
+                open. Browser notifications also work when permission is granted.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                type="button"
+                onClick={onEnableNotifications}
+                disabled={notificationPermission === "granted"}
+              >
+                <BellRing className="h-4 w-4" aria-hidden="true" />
+                {notificationPermission === "granted"
+                  ? "Permission granted"
+                  : "Enable browser notifications"}
+              </button>
+              <label className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700">
+                <input
+                  className="h-4 w-4 accent-emerald-600"
+                  type="checkbox"
+                  checked={reminderSettings.browserNotifications}
+                  onChange={(event) =>
+                    onToggleBrowserNotifications(event.target.checked)
+                  }
+                />
+                Browser alerts
+              </label>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {routineCategories.map((category) => (
+              <label
+                key={`reminder-${category.id}`}
+                className="block rounded-lg border border-zinc-200 p-3"
+              >
+                <span className="mb-2 flex items-center justify-between gap-2">
+                  <RoutineCategoryBadge category={category} />
+                  <span className="text-xs font-semibold text-zinc-400">
+                    #{category.sortOrder}
+                  </span>
+                </span>
+                <input
+                  className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  type="time"
+                  value={reminderSettings.reminderTimes[category.id] ?? ""}
+                  onChange={(event) =>
+                    onReminderTimeChange(category.id, event.target.value)
+                  }
+                />
+              </label>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -3175,7 +4166,7 @@ function StatTile({
 }: {
   icon: typeof Activity;
   label: string;
-  value: number;
+  value: number | string;
   tone: "emerald" | "sky" | "rose" | "amber";
 }) {
   const toneClasses = {
