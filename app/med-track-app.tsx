@@ -12,6 +12,8 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock3,
+  CloudOff,
+  Database,
   Edit3,
   HeartPulse,
   History,
@@ -103,6 +105,24 @@ type AdherenceStats = {
   taken: number;
   rate: number;
   streak: number;
+};
+
+type CloudSyncStatus =
+  | "loading"
+  | "not-configured"
+  | "synced"
+  | "saving"
+  | "error";
+
+type MedTrackSyncData = {
+  medications: Medication[];
+  logs: IntakeLog[];
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
+  careDayKey: string;
+  reminderSettings: ReminderSettings;
+  personalPlanVersion: number;
+  updatedAt: string;
 };
 
 const LOGIN_USERNAME = "mail@mehrdadnaderi.com";
@@ -755,6 +775,209 @@ function normalizeReminderSettings(value: unknown): ReminderSettings {
   return {
     browserNotifications: value.browserNotifications === true,
     reminderTimes,
+  };
+}
+
+function normalizeSyncData(
+  value: unknown,
+  fallbackData: MedTrackSyncData,
+  now: Date,
+): MedTrackSyncData {
+  if (!isRecord(value)) {
+    return fallbackData;
+  }
+
+  const rawMedications = Array.isArray(value.medications)
+    ? value.medications.flatMap((item) => {
+        const medication = normalizeMedication(item);
+        return medication ? [medication] : [];
+      })
+    : fallbackData.medications;
+  const personalPlanVersion =
+    typeof value.personalPlanVersion === "number"
+      ? value.personalPlanVersion
+      : 0;
+  const shouldUpdatePersonalPlan =
+    personalPlanVersion < PERSONAL_PLAN_VERSION;
+  const medications = shouldUpdatePersonalPlan
+    ? mergePersonalMedicationPlan(rawMedications, true)
+    : rawMedications;
+  const categories = ensureItemsById(
+    Array.isArray(value.categories)
+      ? value.categories.flatMap((item) => {
+          const category = normalizeMedicationCategoryOption(item);
+          return category ? [category] : [];
+        })
+      : fallbackData.categories,
+    DEFAULT_MEDICATION_CATEGORIES,
+  );
+  const routineCategories = ensureItemsById(
+    Array.isArray(value.routineCategories)
+      ? value.routineCategories.flatMap((item) => {
+          const category = normalizeRoutineCategory(item);
+          return category ? [category] : [];
+        })
+      : fallbackData.routineCategories,
+    DEFAULT_ROUTINE_CATEGORIES,
+  ).sort((first, second) => first.sortOrder - second.sortOrder);
+  const careDayKey =
+    typeof value.careDayKey === "string"
+      ? resolveCareDayKey(value.careDayKey, now)
+      : fallbackData.careDayKey;
+
+  return {
+    medications,
+    logs: Array.isArray(value.logs)
+      ? value.logs.flatMap((item) => {
+          const log = normalizeIntakeLog(item);
+          return log ? [log] : [];
+        })
+      : fallbackData.logs,
+    categories,
+    routineCategories,
+    careDayKey,
+    reminderSettings: normalizeReminderSettings(value.reminderSettings),
+    personalPlanVersion: PERSONAL_PLAN_VERSION,
+    updatedAt:
+      typeof value.updatedAt === "string"
+        ? value.updatedAt
+        : fallbackData.updatedAt,
+  };
+}
+
+function createLocalSyncData(now: Date): MedTrackSyncData {
+  const storedPlanVersion = readStoredNumber(PERSONAL_PLAN_VERSION_STORAGE_KEY);
+  const shouldUpdatePersonalPlan = storedPlanVersion < PERSONAL_PLAN_VERSION;
+  const storedCareDayKey = readStoredString(CARE_DAY_STORAGE_KEY);
+  const storedMedications = readStoredArray<Medication>(
+    MEDICATIONS_STORAGE_KEY,
+    normalizeMedication,
+  );
+  const shouldLoadStarterPlan =
+    storedMedications.length === 0 || shouldUpdatePersonalPlan;
+  const storedCategories = getStoredOrDefault<MedicationCategoryOption>(
+    CATEGORIES_STORAGE_KEY,
+    normalizeMedicationCategoryOption,
+    DEFAULT_MEDICATION_CATEGORIES,
+  );
+  const storedRoutineCategories = getStoredOrDefault<RoutineCategory>(
+    ROUTINE_CATEGORIES_STORAGE_KEY,
+    normalizeRoutineCategory,
+    DEFAULT_ROUTINE_CATEGORIES,
+  );
+
+  return {
+    medications: shouldLoadStarterPlan
+      ? mergePersonalMedicationPlan(storedMedications, shouldUpdatePersonalPlan)
+      : storedMedications,
+    logs: readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog),
+    categories: shouldLoadStarterPlan
+      ? ensureItemsById(storedCategories, DEFAULT_MEDICATION_CATEGORIES)
+      : storedCategories,
+    routineCategories: (
+      shouldLoadStarterPlan
+        ? ensureItemsById(storedRoutineCategories, DEFAULT_ROUTINE_CATEGORIES)
+        : storedRoutineCategories
+    ).sort((first, second) => first.sortOrder - second.sortOrder),
+    careDayKey: resolveCareDayKey(storedCareDayKey, now),
+    reminderSettings: normalizeReminderSettings(
+      readStoredJson(REMINDER_SETTINGS_STORAGE_KEY),
+    ),
+    personalPlanVersion: PERSONAL_PLAN_VERSION,
+    updatedAt: now.toISOString(),
+  };
+}
+
+function writeLocalSyncData(data: MedTrackSyncData) {
+  writeStoredArray(MEDICATIONS_STORAGE_KEY, data.medications);
+  writeStoredArray(LOGS_STORAGE_KEY, data.logs);
+  writeStoredArray(CATEGORIES_STORAGE_KEY, data.categories);
+  writeStoredArray(ROUTINE_CATEGORIES_STORAGE_KEY, data.routineCategories);
+  writeStoredString(CARE_DAY_STORAGE_KEY, data.careDayKey);
+  writeStoredJson(REMINDER_SETTINGS_STORAGE_KEY, data.reminderSettings);
+  writeStoredString(
+    PERSONAL_PLAN_VERSION_STORAGE_KEY,
+    String(PERSONAL_PLAN_VERSION),
+  );
+}
+
+function createSyncAuthHeader() {
+  return `Basic ${window.btoa(`${LOGIN_USERNAME}:${LOGIN_PASSWORD}`)}`;
+}
+
+async function readCloudSyncData(fallbackData: MedTrackSyncData, now: Date) {
+  const response = await fetch("/api/sync", {
+    method: "GET",
+    headers: {
+      Authorization: createSyncAuthHeader(),
+    },
+    cache: "no-store",
+  });
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (response.status === 503) {
+    return {
+      configured: false,
+      data: fallbackData,
+    };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "Cloud sync failed",
+    );
+  }
+
+  if (!isRecord(payload) || payload.configured !== true) {
+    return {
+      configured: false,
+      data: fallbackData,
+    };
+  }
+
+  return {
+    configured: true,
+    data: payload.data
+      ? normalizeSyncData(payload.data, fallbackData, now)
+      : fallbackData,
+  };
+}
+
+async function writeCloudSyncData(data: MedTrackSyncData) {
+  const response = await fetch("/api/sync", {
+    method: "PUT",
+    headers: {
+      Authorization: createSyncAuthHeader(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ data }),
+    cache: "no-store",
+  });
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (response.status === 503) {
+    return {
+      configured: false as const,
+      savedAt: "",
+    };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "Cloud save failed",
+    );
+  }
+
+  return {
+    configured: true as const,
+    savedAt:
+      isRecord(payload) && typeof payload.savedAt === "string"
+        ? payload.savedAt
+        : new Date().toISOString(),
   };
 }
 
@@ -1468,6 +1691,11 @@ export default function MedTrackApp() {
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
   >("unsupported");
+  const [syncStatus, setSyncStatus] =
+    useState<CloudSyncStatus>("loading");
+  const [isCloudConfigured, setIsCloudConfigured] = useState(false);
+  const [lastCloudSyncAt, setLastCloudSyncAt] = useState("");
+  const [syncMessage, setSyncMessage] = useState("Checking cloud database");
   const [isStorageReady, setIsStorageReady] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
 
@@ -1481,73 +1709,54 @@ export default function MedTrackApp() {
 
   useEffect(() => {
     let isCancelled = false;
-    const timeoutId = window.setTimeout(() => {
+    const timeoutId = window.setTimeout(async () => {
       if (isCancelled) {
         return;
       }
 
       const now = new Date();
-      const storedPlanVersion = readStoredNumber(
-        PERSONAL_PLAN_VERSION_STORAGE_KEY,
-      );
-      const storedCareDayKey = readStoredString(CARE_DAY_STORAGE_KEY);
-      const nextCareDayKey = resolveCareDayKey(storedCareDayKey, now);
-      const shouldUpdatePersonalPlan =
-        storedPlanVersion < PERSONAL_PLAN_VERSION;
+      const localData = createLocalSyncData(now);
+      let syncData = localData;
+      let nextSyncStatus: CloudSyncStatus = "not-configured";
+      let nextSyncMessage = "Database is not configured";
+      let nextIsCloudConfigured = false;
+
+      try {
+        const cloudResult = await readCloudSyncData(localData, now);
+        syncData = cloudResult.data;
+        nextIsCloudConfigured = cloudResult.configured;
+        nextSyncStatus = cloudResult.configured ? "synced" : "not-configured";
+        nextSyncMessage = cloudResult.configured
+          ? "Cloud sync is active"
+          : "Database env variables are missing";
+      } catch (error) {
+        nextSyncStatus = "error";
+        nextSyncMessage =
+          error instanceof Error ? error.message : "Cloud sync failed";
+      }
+
+      if (isCancelled) {
+        return;
+      }
 
       setIsAuthenticated(readStoredAuth());
-      const storedMedications = readStoredArray<Medication>(
-        MEDICATIONS_STORAGE_KEY,
-        normalizeMedication,
-      );
-      const shouldLoadStarterPlan =
-        storedMedications.length === 0 || shouldUpdatePersonalPlan;
-      const storedCategories = getStoredOrDefault<MedicationCategoryOption>(
-        CATEGORIES_STORAGE_KEY,
-        normalizeMedicationCategoryOption,
-        DEFAULT_MEDICATION_CATEGORIES,
-      );
-      const storedRoutineCategories = getStoredOrDefault<RoutineCategory>(
-        ROUTINE_CATEGORIES_STORAGE_KEY,
-        normalizeRoutineCategory,
-        DEFAULT_ROUTINE_CATEGORIES,
-      );
-
-      setMedications(
-        shouldLoadStarterPlan
-          ? mergePersonalMedicationPlan(
-              storedMedications,
-              shouldUpdatePersonalPlan,
-            )
-          : storedMedications,
-      );
-      setLogs(readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog));
-      setCategories(
-        shouldLoadStarterPlan
-          ? ensureItemsById(storedCategories, DEFAULT_MEDICATION_CATEGORIES)
-          : storedCategories,
-      );
-      setRoutineCategories(
-        (
-          shouldLoadStarterPlan
-            ? ensureItemsById(storedRoutineCategories, DEFAULT_ROUTINE_CATEGORIES)
-            : storedRoutineCategories
-        ).sort((first, second) => first.sortOrder - second.sortOrder),
-      );
-      setReminderSettings(
-        normalizeReminderSettings(readStoredJson(REMINDER_SETTINGS_STORAGE_KEY)),
-      );
+      setMedications(syncData.medications);
+      setLogs(syncData.logs);
+      setCategories(syncData.categories);
+      setRoutineCategories(syncData.routineCategories);
+      setReminderSettings(syncData.reminderSettings);
       setNotificationPermission(
         typeof Notification === "undefined"
           ? "unsupported"
           : Notification.permission,
       );
       setToday(now);
-      setCareDayKey(nextCareDayKey);
-      writeStoredString(
-        PERSONAL_PLAN_VERSION_STORAGE_KEY,
-        String(PERSONAL_PLAN_VERSION),
-      );
+      setCareDayKey(syncData.careDayKey);
+      setIsCloudConfigured(nextIsCloudConfigured);
+      setSyncStatus(nextSyncStatus);
+      setSyncMessage(nextSyncMessage);
+      setLastCloudSyncAt(nextIsCloudConfigured ? syncData.updatedAt : "");
+      writeLocalSyncData(syncData);
       setIsStorageReady(true);
     }, 0);
 
@@ -1604,6 +1813,133 @@ export default function MedTrackApp() {
 
     writeStoredJson(REMINDER_SETTINGS_STORAGE_KEY, reminderSettings);
   }, [isStorageReady, reminderSettings]);
+
+  useEffect(() => {
+    if (!isStorageReady || !isCloudConfigured || !isAuthenticated) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      const data: MedTrackSyncData = {
+        medications,
+        logs,
+        categories,
+        routineCategories,
+        careDayKey,
+        reminderSettings,
+        personalPlanVersion: PERSONAL_PLAN_VERSION,
+        updatedAt: new Date().toISOString(),
+      };
+
+      setSyncStatus("saving");
+      setSyncMessage("Saving to cloud database");
+
+      try {
+        const result = await writeCloudSyncData(data);
+
+        if (!result.configured) {
+          setIsCloudConfigured(false);
+          setSyncStatus("not-configured");
+          setSyncMessage("Database env variables are missing");
+          return;
+        }
+
+        setSyncStatus("synced");
+        setSyncMessage("Cloud sync is active");
+        setLastCloudSyncAt(result.savedAt);
+      } catch (error) {
+        setSyncStatus("error");
+        setSyncMessage(
+          error instanceof Error ? error.message : "Cloud save failed",
+        );
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    careDayKey,
+    categories,
+    isAuthenticated,
+    isCloudConfigured,
+    isStorageReady,
+    logs,
+    medications,
+    reminderSettings,
+    routineCategories,
+  ]);
+
+  useEffect(() => {
+    if (!isStorageReady || !isCloudConfigured || !isAuthenticated) {
+      return;
+    }
+
+    async function refreshFromCloud() {
+      const now = new Date();
+      const fallbackData: MedTrackSyncData = {
+        medications,
+        logs,
+        categories,
+        routineCategories,
+        careDayKey,
+        reminderSettings,
+        personalPlanVersion: PERSONAL_PLAN_VERSION,
+        updatedAt: new Date().toISOString(),
+      };
+
+      try {
+        const cloudResult = await readCloudSyncData(fallbackData, now);
+
+        if (!cloudResult.configured) {
+          setIsCloudConfigured(false);
+          setSyncStatus("not-configured");
+          setSyncMessage("Database env variables are missing");
+          return;
+        }
+
+        setMedications(cloudResult.data.medications);
+        setLogs(cloudResult.data.logs);
+        setCategories(cloudResult.data.categories);
+        setRoutineCategories(cloudResult.data.routineCategories);
+        setCareDayKey(cloudResult.data.careDayKey);
+        setReminderSettings(cloudResult.data.reminderSettings);
+        setSyncStatus("synced");
+        setSyncMessage("Cloud sync is active");
+        setLastCloudSyncAt(cloudResult.data.updatedAt);
+        writeLocalSyncData(cloudResult.data);
+      } catch {
+        setSyncStatus("error");
+        setSyncMessage("Could not refresh cloud data");
+      }
+    }
+
+    function handleFocus() {
+      void refreshFromCloud();
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void refreshFromCloud();
+      }
+    }
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [
+    careDayKey,
+    categories,
+    isAuthenticated,
+    isCloudConfigured,
+    isStorageReady,
+    logs,
+    medications,
+    reminderSettings,
+    routineCategories,
+  ]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -2524,6 +2860,13 @@ export default function MedTrackApp() {
               );
             })}
           </nav>
+
+          <SyncStatusPanel
+            syncStatus={syncStatus}
+            syncMessage={syncMessage}
+            isCloudConfigured={isCloudConfigured}
+            lastCloudSyncAt={lastCloudSyncAt}
+          />
         </aside>
 
         <section className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -4133,6 +4476,52 @@ function RoutineCategoryBadge({ category }: { category: RoutineCategory }) {
       <span className={`h-1.5 w-1.5 rounded-sm ${toneClasses.dotClassName}`} />
       {category.name}
     </span>
+  );
+}
+
+function SyncStatusPanel({
+  syncStatus,
+  syncMessage,
+  isCloudConfigured,
+  lastCloudSyncAt,
+}: {
+  syncStatus: CloudSyncStatus;
+  syncMessage: string;
+  isCloudConfigured: boolean;
+  lastCloudSyncAt: string;
+}) {
+  const isHealthy = syncStatus === "synced" || syncStatus === "saving";
+  const Icon = isCloudConfigured ? Database : CloudOff;
+  const statusLabel =
+    syncStatus === "loading"
+      ? "Checking sync"
+      : syncStatus === "saving"
+        ? "Saving"
+        : syncStatus === "synced"
+          ? "Cloud synced"
+          : syncStatus === "not-configured"
+            ? "Local only"
+            : "Sync error";
+
+  return (
+    <section
+      className={`mt-5 rounded-lg border p-3 text-sm ${
+        isHealthy
+          ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+          : "border-amber-200 bg-amber-50 text-amber-900"
+      }`}
+    >
+      <div className="flex items-center gap-2 font-semibold">
+        <Icon className="h-4 w-4" aria-hidden="true" />
+        {statusLabel}
+      </div>
+      <p className="mt-1 text-xs leading-5">{syncMessage}</p>
+      {lastCloudSyncAt && (
+        <p className="mt-2 text-xs font-medium">
+          Last sync: {formatLogDate(lastCloudSyncAt)}
+        </p>
+      )}
+    </section>
   );
 }
 
