@@ -139,7 +139,7 @@ const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
 const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
-const PERSONAL_PLAN_VERSION = 3;
+const PERSONAL_PLAN_VERSION = 4;
 const AUTO_ROLLOVER_HOUR = 12;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
@@ -646,7 +646,7 @@ function createStarterMedicationPlan(): Medication[] {
         dayMode: "daily",
         times: [],
         days: [...ALL_DAYS],
-        order: 1,
+        order: 5,
         routineCategoryId: "before-bed",
       },
       notes:
@@ -664,7 +664,7 @@ function createStarterMedicationPlan(): Medication[] {
         dayMode: "daily",
         times: [],
         days: [...ALL_DAYS],
-        order: 2,
+        order: 6,
         routineCategoryId: "before-bed",
       },
       notes:
