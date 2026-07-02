@@ -22,6 +22,7 @@ import {
   LogOut,
   Pill,
   Plus,
+  RotateCcw,
   Save,
   Settings,
   ShieldCheck,
@@ -71,6 +72,7 @@ type TodayMedication = {
   order: number | null;
   routineCategoryId: string | null;
   isTaken: boolean;
+  takenLogId: string | null;
 };
 
 type OrderedMedicationGroup = {
@@ -117,6 +119,7 @@ type CloudSyncStatus =
 type MedTrackSyncData = {
   medications: Medication[];
   logs: IntakeLog[];
+  deletedLogIds: string[];
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   careDayKey: string;
@@ -129,6 +132,7 @@ const LOGIN_USERNAME = "mail@mehrdadnaderi.com";
 const LOGIN_PASSWORD = "Naderi$2050";
 const MEDICATIONS_STORAGE_KEY = "medtrack-medications";
 const LOGS_STORAGE_KEY = "medtrack-intake-logs";
+const DELETED_LOG_IDS_STORAGE_KEY = "medtrack-deleted-log-ids";
 const AUTH_STORAGE_KEY = "medtrack-authenticated";
 const CATEGORIES_STORAGE_KEY = "medtrack-categories";
 const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
@@ -782,6 +786,10 @@ function mergeSyncData(
   cloudData: MedTrackSyncData,
   localData: MedTrackSyncData,
 ): MedTrackSyncData {
+  const deletedLogIds = Array.from(
+    new Set([...cloudData.deletedLogIds, ...localData.deletedLogIds]),
+  );
+  const deletedLogIdSet = new Set(deletedLogIds);
   const categories = ensureItemsById(
     [...cloudData.categories, ...localData.categories],
     DEFAULT_MEDICATION_CATEGORIES,
@@ -813,11 +821,15 @@ function mergeSyncData(
   const logById = new Map<string, IntakeLog>();
 
   cloudData.logs.forEach((log) => {
+    if (deletedLogIdSet.has(log.id)) {
+      return;
+    }
+
     logById.set(log.id, log);
   });
 
   localData.logs.forEach((log) => {
-    if (logById.has(log.id)) {
+    if (deletedLogIdSet.has(log.id) || logById.has(log.id)) {
       return;
     }
 
@@ -833,6 +845,7 @@ function mergeSyncData(
   return {
     medications,
     logs: Array.from(logById.values()),
+    deletedLogIds,
     categories,
     routineCategories,
     careDayKey: cloudData.careDayKey || localData.careDayKey,
@@ -908,6 +921,12 @@ function normalizeSyncData(
           return log ? [log] : [];
         })
       : fallbackData.logs,
+    deletedLogIds: Array.isArray(value.deletedLogIds)
+      ? value.deletedLogIds.flatMap((item) => {
+          const id = normalizeString(item).trim();
+          return id ? [id] : [];
+        })
+      : [],
     categories,
     routineCategories,
     careDayKey,
@@ -942,12 +961,22 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
     normalizeRoutineCategory,
     DEFAULT_ROUTINE_CATEGORIES,
   );
+  const storedDeletedLogIds = readStoredArray<string>(
+    DELETED_LOG_IDS_STORAGE_KEY,
+    normalizeStoredString,
+  );
+  const storedDeletedLogIdSet = new Set(storedDeletedLogIds);
+  const storedLogs = readStoredArray<IntakeLog>(
+    LOGS_STORAGE_KEY,
+    normalizeIntakeLog,
+  ).filter((log) => !storedDeletedLogIdSet.has(log.id));
 
   return {
     medications: shouldLoadStarterPlan
       ? mergePersonalMedicationPlan(storedMedications, shouldUpdatePersonalPlan)
       : storedMedications,
-    logs: readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog),
+    logs: storedLogs,
+    deletedLogIds: storedDeletedLogIds,
     categories: shouldLoadStarterPlan
       ? ensureItemsById(storedCategories, DEFAULT_MEDICATION_CATEGORIES)
       : storedCategories,
@@ -968,6 +997,7 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
 function writeLocalSyncData(data: MedTrackSyncData) {
   writeStoredArray(MEDICATIONS_STORAGE_KEY, data.medications);
   writeStoredArray(LOGS_STORAGE_KEY, data.logs);
+  writeStoredArray(DELETED_LOG_IDS_STORAGE_KEY, data.deletedLogIds);
   writeStoredArray(CATEGORIES_STORAGE_KEY, data.categories);
   writeStoredArray(ROUTINE_CATEGORIES_STORAGE_KEY, data.routineCategories);
   writeStoredString(CARE_DAY_STORAGE_KEY, data.careDayKey);
@@ -1094,6 +1124,11 @@ function isWeekDay(value: unknown): value is WeekDay {
 
 function normalizeString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function normalizeStoredString(value: unknown) {
+  const normalizedValue = normalizeString(value).trim();
+  return normalizedValue.length > 0 ? normalizedValue : null;
 }
 
 function normalizeTime(value: unknown) {
@@ -1556,27 +1591,29 @@ function getTodayMedicationKey(entry: TodayMedication) {
     : `${entry.medication.id}:order:${entry.order ?? 1}`;
 }
 
-function isTodayMedicationTaken(
+function getTodayMedicationLog(
   logs: IntakeLog[],
   medication: Medication,
   scheduleType: MedicationScheduleType,
   todayKey: string,
   time: string | null,
 ) {
-  return logs.some((log) => {
-    if (log.medicationId !== medication.id || log.date !== todayKey) {
-      return false;
-    }
+  return (
+    logs.find((log) => {
+      if (log.medicationId !== medication.id || log.date !== todayKey) {
+        return false;
+      }
 
-    const logScheduleType =
-      log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
+      const logScheduleType =
+        log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
 
-    if (scheduleType === "timed") {
-      return logScheduleType === "timed" && log.scheduledTime === time;
-    }
+      if (scheduleType === "timed") {
+        return logScheduleType === "timed" && log.scheduledTime === time;
+      }
 
-    return logScheduleType === "ordered";
-  });
+      return logScheduleType === "ordered";
+    }) ?? null
+  );
 }
 
 function buildMedicationEntriesForDate(
@@ -1594,23 +1631,34 @@ function buildMedicationEntriesForDate(
 
       if (scheduleType === "timed") {
         medication.schedule.times.forEach((time) => {
+          const takenLog = getTodayMedicationLog(
+            logs,
+            medication,
+            scheduleType,
+            dateKey,
+            time,
+          );
+
           entries.push({
             medication,
             scheduleType,
             time,
             order: null,
             routineCategoryId: null,
-            isTaken: isTodayMedicationTaken(
-              logs,
-              medication,
-              scheduleType,
-              dateKey,
-              time,
-            ),
+            isTaken: Boolean(takenLog),
+            takenLogId: takenLog?.id ?? null,
           });
         });
         return;
       }
+
+      const takenLog = getTodayMedicationLog(
+        logs,
+        medication,
+        scheduleType,
+        dateKey,
+        null,
+      );
 
       entries.push({
         medication,
@@ -1618,13 +1666,8 @@ function buildMedicationEntriesForDate(
         time: null,
         order: getMedicationOrder(medication),
         routineCategoryId: getMedicationRoutineCategoryId(medication),
-        isTaken: isTodayMedicationTaken(
-          logs,
-          medication,
-          scheduleType,
-          dateKey,
-          null,
-        ),
+        isTaken: Boolean(takenLog),
+        takenLogId: takenLog?.id ?? null,
       });
     });
 
@@ -1746,6 +1789,7 @@ export default function MedTrackApp() {
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [medications, setMedications] = useState<Medication[]>([]);
   const [logs, setLogs] = useState<IntakeLog[]>([]);
+  const [deletedLogIds, setDeletedLogIds] = useState<string[]>([]);
   const [categories, setCategories] = useState<MedicationCategoryOption[]>(
     DEFAULT_MEDICATION_CATEGORIES,
   );
@@ -1819,6 +1863,7 @@ export default function MedTrackApp() {
       setIsAuthenticated(readStoredAuth());
       setMedications(syncData.medications);
       setLogs(syncData.logs);
+      setDeletedLogIds(syncData.deletedLogIds);
       setCategories(syncData.categories);
       setRoutineCategories(syncData.routineCategories);
       setReminderSettings(syncData.reminderSettings);
@@ -1864,6 +1909,14 @@ export default function MedTrackApp() {
       return;
     }
 
+    writeStoredArray(DELETED_LOG_IDS_STORAGE_KEY, deletedLogIds);
+  }, [deletedLogIds, isStorageReady]);
+
+  useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
     writeStoredArray(CATEGORIES_STORAGE_KEY, categories);
   }, [categories, isStorageReady]);
 
@@ -1900,6 +1953,7 @@ export default function MedTrackApp() {
       const data: MedTrackSyncData = {
         medications,
         logs,
+        deletedLogIds,
         categories,
         routineCategories,
         careDayKey,
@@ -1936,6 +1990,7 @@ export default function MedTrackApp() {
   }, [
     careDayKey,
     categories,
+    deletedLogIds,
     isAuthenticated,
     isCloudConfigured,
     isStorageReady,
@@ -1955,6 +2010,7 @@ export default function MedTrackApp() {
       const fallbackData: MedTrackSyncData = {
         medications,
         logs,
+        deletedLogIds,
         categories,
         routineCategories,
         careDayKey,
@@ -1975,6 +2031,7 @@ export default function MedTrackApp() {
 
         setMedications(cloudResult.data.medications);
         setLogs(cloudResult.data.logs);
+        setDeletedLogIds(cloudResult.data.deletedLogIds);
         setCategories(cloudResult.data.categories);
         setRoutineCategories(cloudResult.data.routineCategories);
         setCareDayKey(cloudResult.data.careDayKey);
@@ -2009,6 +2066,7 @@ export default function MedTrackApp() {
   }, [
     careDayKey,
     categories,
+    deletedLogIds,
     isAuthenticated,
     isCloudConfigured,
     isStorageReady,
@@ -2732,6 +2790,29 @@ export default function MedTrackApp() {
     toast.success(`${entry.medication.name} marked as taken`);
   }
 
+  function rememberDeletedLogIds(logIds: string[]) {
+    if (logIds.length === 0) {
+      return;
+    }
+
+    setDeletedLogIds((currentIds) =>
+      Array.from(new Set([...currentIds, ...logIds])),
+    );
+  }
+
+  function handleUndoTaken(entry: TodayMedication) {
+    if (!entry.takenLogId) {
+      toast.error("There is no completed log to undo");
+      return;
+    }
+
+    rememberDeletedLogIds([entry.takenLogId]);
+    setLogs((currentLogs) =>
+      currentLogs.filter((log) => log.id !== entry.takenLogId),
+    );
+    toast.success(`${entry.medication.name} moved back to pending`);
+  }
+
   function handleMarkGroupAsTaken(entries: TodayMedication[]) {
     if (!todayKey) {
       toast.error("The schedule is still loading");
@@ -2769,6 +2850,24 @@ export default function MedTrackApp() {
 
     setLogs((currentLogs) => [...nextLogs, ...currentLogs]);
     toast.success("Step marked as taken");
+  }
+
+  function handleUndoGroupTaken(entries: TodayMedication[]) {
+    const logIds = entries.flatMap((entry) =>
+      entry.takenLogId ? [entry.takenLogId] : [],
+    );
+
+    if (logIds.length === 0) {
+      toast.error("There is nothing completed in this step to undo");
+      return;
+    }
+
+    rememberDeletedLogIds(logIds);
+    const logIdSet = new Set(logIds);
+    setLogs((currentLogs) =>
+      currentLogs.filter((log) => !logIdSet.has(log.id)),
+    );
+    toast.success("Step moved back to pending");
   }
 
   function handleMarkPastAsTaken(entry: TodayMedication, dateKey: string) {
@@ -2819,6 +2918,7 @@ export default function MedTrackApp() {
     setLogs((currentLogs) =>
       currentLogs.filter((currentLog) => currentLog.id !== log.id),
     );
+    rememberDeletedLogIds([log.id]);
     toast.success("History log deleted");
   }
 
@@ -2962,7 +3062,9 @@ export default function MedTrackApp() {
               categories={categories}
               routineCategories={routineCategories}
               onMarkAsTaken={handleMarkAsTaken}
+              onUndoTaken={handleUndoTaken}
               onMarkGroupAsTaken={handleMarkGroupAsTaken}
+              onUndoGroupTaken={handleUndoGroupTaken}
               onAddMedication={() => setActiveTab("add")}
               onEndCareDay={handleEndCareDay}
             />
@@ -3053,7 +3155,9 @@ function DashboardView({
   categories,
   routineCategories,
   onMarkAsTaken,
+  onUndoTaken,
   onMarkGroupAsTaken,
+  onUndoGroupTaken,
   onAddMedication,
   onEndCareDay,
 }: {
@@ -3070,7 +3174,9 @@ function DashboardView({
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
+  onUndoTaken: (entry: TodayMedication) => void;
   onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
+  onUndoGroupTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
   onEndCareDay: () => void;
 }) {
@@ -3215,6 +3321,7 @@ function DashboardView({
                         categories={categories}
                         routineCategories={routineCategories}
                         onMarkAsTaken={onMarkAsTaken}
+                        onUndoTaken={onUndoTaken}
                       />
                     ))}
                   </div>
@@ -3229,7 +3336,9 @@ function DashboardView({
                   categories={categories}
                   routineCategories={routineCategories}
                   onMarkAsTaken={onMarkAsTaken}
+                  onUndoTaken={onUndoTaken}
                   onMarkGroupAsTaken={onMarkGroupAsTaken}
+                  onUndoGroupTaken={onUndoGroupTaken}
                 />
               ))}
             </div>
@@ -3314,14 +3423,18 @@ function RoutineChecklistSection({
   categories,
   routineCategories,
   onMarkAsTaken,
+  onUndoTaken,
   onMarkGroupAsTaken,
+  onUndoGroupTaken,
 }: {
   routineCategory: RoutineCategory;
   groups: OrderedMedicationGroup[];
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
+  onUndoTaken: (entry: TodayMedication) => void;
   onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
+  onUndoGroupTaken: (entries: TodayMedication[]) => void;
 }) {
   const totalEntries = groups.reduce(
     (sum, group) => sum + group.entries.length,
@@ -3350,31 +3463,51 @@ function RoutineChecklistSection({
 
       <div className="space-y-3 p-3">
         {groups.map((group) => (
-          <div key={`${group.routineCategoryId}-${group.order}`}>
-            <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700">
-                  Step {group.order}
-                </span>
-                {group.entries.length > 1 && (
-                  <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-800">
-                    Use together
-                  </span>
+          <div
+            key={`${group.routineCategoryId}-${group.order}`}
+            className="rounded-lg border border-zinc-200 bg-zinc-50/70 p-3"
+          >
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold text-zinc-950">
+                    Step {group.order} - {group.routineCategoryName}
+                  </h3>
+                  {group.entries.length > 1 && (
+                    <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-800">
+                      Use together
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs font-medium text-zinc-500">
+                  {group.takenCount}/{group.entries.length} done
+                  {group.entries.length - group.takenCount > 0
+                    ? `, ${group.entries.length - group.takenCount} pending`
+                    : ""}
+                </p>
+              </div>
+              <div className="grid gap-2 sm:flex sm:shrink-0">
+                {group.takenCount > 0 && (
+                  <button
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 sm:w-auto"
+                    type="button"
+                    onClick={() => onUndoGroupTaken(group.entries)}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                    Undo Step {group.order}
+                  </button>
+                )}
+                {!group.isTaken && (
+                  <button
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 sm:w-auto"
+                    type="button"
+                    onClick={() => onMarkGroupAsTaken(group.entries)}
+                  >
+                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                    Mark Step {group.order}
+                  </button>
                 )}
               </div>
-              <button
-                className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                  group.isTaken
-                    ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : "border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                }`}
-                type="button"
-                onClick={() => onMarkGroupAsTaken(group.entries)}
-                disabled={group.isTaken}
-              >
-                <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                {group.isTaken ? "Done" : "Mark step"}
-              </button>
             </div>
             <div className="space-y-2">
               {group.entries.map((entry) => (
@@ -3384,6 +3517,7 @@ function RoutineChecklistSection({
                   categories={categories}
                   routineCategories={routineCategories}
                   onMarkAsTaken={onMarkAsTaken}
+                  onUndoTaken={onUndoTaken}
                 />
               ))}
             </div>
@@ -3399,17 +3533,21 @@ function MedicationDoseCard({
   categories,
   routineCategories,
   onMarkAsTaken,
+  onUndoTaken,
 }: {
   entry: TodayMedication;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
+  onUndoTaken: (entry: TodayMedication) => void;
 }) {
   const medicationCategory = getMedicationCategoryOption(
     categories,
     entry.medication.category,
   );
   const toneClasses = CATEGORY_TONE_CLASSES[medicationCategory.tone];
+  const actionLabel = entry.isTaken ? "Undo done" : "Mark done";
+  const ActionIcon = entry.isTaken ? RotateCcw : Check;
 
   return (
     <div
@@ -3419,24 +3557,20 @@ function MedicationDoseCard({
           : "border-zinc-200 bg-white hover:border-emerald-200"
       }`}
     >
-      <button
-        className={`flex h-10 w-10 items-center justify-center rounded-md transition ${
+      <div
+        className={`flex h-10 w-10 items-center justify-center rounded-md ${
           entry.isTaken
             ? "bg-emerald-600 text-white"
-            : `${toneClasses.iconClassName} hover:ring-2 hover:ring-emerald-100`
+            : toneClasses.iconClassName
         }`}
-        type="button"
-        onClick={() => onMarkAsTaken(entry)}
-        disabled={entry.isTaken}
-        title={entry.isTaken ? "Already taken" : "Mark as taken"}
-        aria-label={`Mark ${entry.medication.name} as taken`}
+        aria-hidden="true"
       >
         {entry.isTaken ? (
           <Check className="h-5 w-5" aria-hidden="true" />
         ) : (
           <Pill className="h-5 w-5" aria-hidden="true" />
         )}
-      </button>
+      </div>
 
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -3463,16 +3597,32 @@ function MedicationDoseCard({
         )}
       </div>
 
-      <span
-        className={`inline-flex w-fit items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
-          entry.isTaken
-            ? "bg-emerald-100 text-emerald-800"
-            : "bg-zinc-100 text-zinc-600"
-        }`}
-      >
-        <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-        {entry.isTaken ? "Taken" : "Pending"}
-      </span>
+      <div className="grid gap-2 sm:w-32">
+        <span
+          className={`inline-flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
+            entry.isTaken
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-zinc-100 text-zinc-600"
+          }`}
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+          {entry.isTaken ? "Taken" : "Pending"}
+        </span>
+        <button
+          className={`inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-semibold transition ${
+            entry.isTaken
+              ? "border border-zinc-200 bg-white text-zinc-700 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+              : "border border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700"
+          }`}
+          type="button"
+          onClick={() => (entry.isTaken ? onUndoTaken(entry) : onMarkAsTaken(entry))}
+          title={actionLabel}
+          aria-label={`${actionLabel} for ${entry.medication.name}`}
+        >
+          <ActionIcon className="h-3.5 w-3.5" aria-hidden="true" />
+          {actionLabel}
+        </button>
+      </div>
     </div>
   );
 }
