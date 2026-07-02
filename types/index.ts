@@ -18,9 +18,15 @@ export type WeekDay =
   | "saturday";
 
 export type MedicationScheduleType = "timed" | "ordered";
+export type MedicationDayMode =
+  | "daily"
+  | "weekdays"
+  | "even-dates"
+  | "odd-dates";
 
 export interface MedicationSchedule {
   type: MedicationScheduleType;
+  dayMode: MedicationDayMode;
   times: string[];
   days: WeekDay[];
   order?: number;

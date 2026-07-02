@@ -33,6 +33,7 @@ import type {
   Medication,
   MedicationCategory,
   MedicationCategoryOption,
+  MedicationDayMode,
   MedicationScheduleType,
   RoutineCategory,
   WeekDay,
@@ -47,12 +48,12 @@ type MedicationFormState = {
   unit: string;
   category: MedicationCategory;
   scheduleType: MedicationScheduleType;
+  dayMode: MedicationDayMode;
   times: string[];
   timeInput: string;
   order: number;
   routineCategoryId: string;
   days: WeekDay[];
-  daily: boolean;
   notes: string;
 };
 
@@ -106,6 +107,33 @@ const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
 ];
 
 const ALL_DAYS = WEEK_DAYS.map((day) => day.id);
+
+const DAY_MODE_OPTIONS: {
+  id: MedicationDayMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: "daily",
+    label: "Daily",
+    description: "Due every day",
+  },
+  {
+    id: "weekdays",
+    label: "Specific weekdays",
+    description: "Choose exact weekdays",
+  },
+  {
+    id: "even-dates",
+    label: "Even calendar dates",
+    description: "Due on dates like 2, 4, 6",
+  },
+  {
+    id: "odd-dates",
+    label: "Odd calendar dates",
+    description: "Due on dates like 1, 3, 5",
+  },
+];
 
 const TABS: {
   id: TabId;
@@ -183,9 +211,24 @@ const DEFAULT_MEDICATION_CATEGORIES: MedicationCategoryOption[] = [
     tone: "sky",
   },
   {
+    id: "heart-rate",
+    name: "Heart rate",
+    tone: "rose",
+  },
+  {
+    id: "mental-health",
+    name: "Mental health",
+    tone: "violet",
+  },
+  {
     id: "liver",
     name: "Liver",
     tone: "emerald",
+  },
+  {
+    id: "vitamins",
+    name: "Vitamins",
+    tone: "amber",
   },
   {
     id: "other",
@@ -214,28 +257,34 @@ const DEFAULT_ROUTINE_CATEGORIES: RoutineCategory[] = [
     sortOrder: 3,
   },
   {
+    id: "during-day",
+    name: "During the day",
+    tone: "sky",
+    sortOrder: 4,
+  },
+  {
     id: "lunch",
     name: "Noon with lunch",
     tone: "rose",
-    sortOrder: 4,
+    sortOrder: 5,
   },
   {
     id: "dinner",
     name: "Evening with dinner",
     tone: "violet",
-    sortOrder: 5,
+    sortOrder: 6,
   },
   {
     id: "before-bed",
     name: "Before bed",
     tone: "zinc",
-    sortOrder: 6,
+    sortOrder: 7,
   },
   {
     id: "anytime",
     name: "Anytime",
     tone: "zinc",
-    sortOrder: 7,
+    sortOrder: 8,
   },
 ];
 
@@ -247,6 +296,7 @@ const UNITS = [
   "ml",
   "tablet",
   "capsule",
+  "IU",
   "drop",
   "spray",
   "application",
@@ -261,12 +311,12 @@ function createEmptyForm(): MedicationFormState {
     unit: "mg",
     category: DEFAULT_CATEGORY_ID,
     scheduleType: "ordered",
+    dayMode: "daily",
     times: ["08:00"],
     timeInput: "08:00",
     order: 1,
     routineCategoryId: DEFAULT_ROUTINE_CATEGORY_ID,
     days: ALL_DAYS,
-    daily: true,
     notes: "",
   };
 }
@@ -296,6 +346,192 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function normalizeMedicationName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function ensureItemsById<T extends { id: string }>(
+  currentItems: T[],
+  requiredItems: T[],
+) {
+  const itemsById = new Map(currentItems.map((item) => [item.id, item]));
+
+  requiredItems.forEach((item) => {
+    if (!itemsById.has(item.id)) {
+      itemsById.set(item.id, item);
+    }
+  });
+
+  return Array.from(itemsById.values());
+}
+
+function createStarterMedicationPlan(): Medication[] {
+  return [
+    {
+      id: createId(),
+      name: "Exforge HCT 5/160/12.5 mg Tablet (amlodipine/valsartan/hydrochlorothiazide)",
+      dosage: "1",
+      unit: "tablet",
+      category: "blood-pressure",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "after-waking",
+      },
+      notes:
+        "Morning blood-pressure medication. Take at the same time each day, preferably in the morning, exactly as prescribed. Because it includes hydrochlorothiazide, morning use can help avoid nighttime urination. Track blood pressure and ask your doctor before changing the dose.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Vitamin D3 2000 IU",
+      dosage: "2000",
+      unit: "IU",
+      category: "vitamins",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "breakfast",
+      },
+      notes:
+        "Daily vitamin D. Entered with breakfast for consistency and because vitamin D is usually easier to remember with food. If your doctor gave a different timing, follow that plan.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Zoloft 50 mg Tablet (sertraline)",
+      dosage: "1",
+      unit: "tablet",
+      category: "mental-health",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "breakfast",
+      },
+      notes:
+        "Daily anxiety medication. Entered with breakfast so it stays at a consistent time each day. Take exactly as prescribed and do not stop suddenly without medical guidance. If it causes sleepiness or stomach upset, ask your doctor about timing.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Skinoren 20% Cream (azelaic acid)",
+      dosage: "thin layer",
+      unit: "application",
+      category: "skin",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "morning",
+      },
+      notes:
+        "Morning skin treatment for dark spots. Apply a thin layer to the target areas after gentle cleansing and drying. Avoid eyes, lips, and irritated skin. Use daytime sunscreen and reduce frequency or contact your dermatologist if irritation becomes strong.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Concor COR 2.5 mg Tablet (bisoprolol) - half tablet",
+      dosage: "0.5",
+      unit: "tablet",
+      category: "heart-rate",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "during-day",
+      },
+      notes:
+        "Heart-rate medication. You said half of a 2.5 mg tablet during the day. Keep the timing consistent, and follow your doctor if they gave a preferred time. Do not stop beta-blockers suddenly unless your doctor tells you to.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Liv.52 Tablet",
+      dosage: "2",
+      unit: "tablet",
+      category: "liver",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "lunch",
+      },
+      notes:
+        "Liver support supplement. You said 2 tablets daily, entered with lunch to make it easy to remember with food. Follow your clinician's instructions if they gave a different plan.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Avodart 0.5 mg Capsule (dutasteride)",
+      dosage: "1",
+      unit: "capsule",
+      category: "hair",
+      schedule: {
+        type: "ordered",
+        dayMode: "even-dates",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "dinner",
+      },
+      notes:
+        "Hair medication. Doctor instructed 0.5 mg on even-numbered days. Swallow the capsule whole; do not chew or open it. MedTrack currently treats even days as even local calendar dates, so confirm if your doctor meant Persian-calendar even days.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "NewGel+E Advanced Silicone Gel",
+      dosage: "thin layer",
+      unit: "application",
+      category: "skin",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "before-bed",
+      },
+      notes:
+        "Night skin/scar gel. Apply a very thin layer to clean, dry target skin and let it dry completely before clothing or bedding touches it. Avoid eyes, mucous membranes, and open wounds.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "Regaine 5% Minoxidil Topical Solution/Spray",
+      dosage: "15",
+      unit: "drop",
+      category: "hair",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "before-bed",
+      },
+      notes:
+        "Night scalp treatment. Apply 15 drops to the scalp as your current plan says, ideally when the scalp is dry. Let it dry fully before lying down, and do not exceed your doctor or product-label directions.",
+      isActive: true,
+    },
+  ];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -315,6 +551,15 @@ function isMedicationScheduleType(
   value: unknown,
 ): value is MedicationScheduleType {
   return value === "timed" || value === "ordered";
+}
+
+function isMedicationDayMode(value: unknown): value is MedicationDayMode {
+  return (
+    value === "daily" ||
+    value === "weekdays" ||
+    value === "even-dates" ||
+    value === "odd-dates"
+  );
 }
 
 function isWeekDay(value: unknown): value is WeekDay {
@@ -346,6 +591,26 @@ function normalizeOrder(value: unknown) {
   }
 
   return Math.max(1, Math.round(numericValue));
+}
+
+function normalizeDayMode(
+  value: unknown,
+  days: WeekDay[],
+): MedicationDayMode {
+  if (isMedicationDayMode(value)) {
+    return value;
+  }
+
+  return days.length > 0 && days.length < WEEK_DAYS.length
+    ? "weekdays"
+    : "daily";
+}
+
+function getMedicationDayMode(schedule: {
+  dayMode?: MedicationDayMode;
+  days: WeekDay[];
+}) {
+  return normalizeDayMode(schedule.dayMode, schedule.days);
 }
 
 function normalizeMedicationCategoryOption(
@@ -425,6 +690,7 @@ function normalizeMedication(value: unknown): Medication | null {
   const days = Array.isArray(schedule.days)
     ? schedule.days.filter(isWeekDay)
     : [];
+  const dayMode = normalizeDayMode(schedule.dayMode, days);
   const scheduleType = isMedicationScheduleType(schedule.type)
     ? schedule.type
     : times.length > 0
@@ -446,11 +712,15 @@ function normalizeMedication(value: unknown): Medication | null {
       : DEFAULT_CATEGORY_ID,
     schedule: {
       type: scheduleType,
+      dayMode,
       times:
         scheduleType === "timed" && times.length > 0
           ? Array.from(new Set(times)).sort()
           : [],
-      days: days.length > 0 ? days : ALL_DAYS,
+      days:
+        dayMode === "weekdays" && days.length > 0
+          ? days
+          : [...ALL_DAYS],
       order: scheduleType === "ordered" ? normalizeOrder(schedule.order) : 1,
       routineCategoryId:
         scheduleType === "ordered"
@@ -611,14 +881,42 @@ function getTodayDay(date: Date): WeekDay {
   return WEEK_DAYS[date.getDay()].id;
 }
 
-function getMedicationDaysLabel(days: WeekDay[]) {
-  if (days.length === WEEK_DAYS.length) {
+function getMedicationDaysLabel(schedule: Medication["schedule"]) {
+  const dayMode = getMedicationDayMode(schedule);
+
+  if (dayMode === "daily") {
     return "Daily";
   }
 
-  return WEEK_DAYS.filter((day) => days.includes(day.id))
+  if (dayMode === "even-dates") {
+    return "Even calendar dates";
+  }
+
+  if (dayMode === "odd-dates") {
+    return "Odd calendar dates";
+  }
+
+  return WEEK_DAYS.filter((day) => schedule.days.includes(day.id))
     .map((day) => day.short)
     .join(", ");
+}
+
+function isMedicationDueOnDate(medication: Medication, date: Date) {
+  const dayMode = getMedicationDayMode(medication.schedule);
+
+  if (dayMode === "daily") {
+    return true;
+  }
+
+  if (dayMode === "even-dates") {
+    return date.getDate() % 2 === 0;
+  }
+
+  if (dayMode === "odd-dates") {
+    return date.getDate() % 2 === 1;
+  }
+
+  return medication.schedule.days.includes(getTodayDay(date));
 }
 
 function getMedicationCategoryOption(
@@ -776,25 +1074,38 @@ export default function MedTrackApp() {
       }
 
       setIsAuthenticated(readStoredAuth());
+      const storedMedications = readStoredArray<Medication>(
+        MEDICATIONS_STORAGE_KEY,
+        normalizeMedication,
+      );
+      const shouldLoadStarterPlan = storedMedications.length === 0;
+      const storedCategories = getStoredOrDefault<MedicationCategoryOption>(
+        CATEGORIES_STORAGE_KEY,
+        normalizeMedicationCategoryOption,
+        DEFAULT_MEDICATION_CATEGORIES,
+      );
+      const storedRoutineCategories = getStoredOrDefault<RoutineCategory>(
+        ROUTINE_CATEGORIES_STORAGE_KEY,
+        normalizeRoutineCategory,
+        DEFAULT_ROUTINE_CATEGORIES,
+      );
+
       setMedications(
-        readStoredArray<Medication>(
-          MEDICATIONS_STORAGE_KEY,
-          normalizeMedication,
-        ),
+        shouldLoadStarterPlan
+          ? createStarterMedicationPlan()
+          : storedMedications,
       );
       setLogs(readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog));
       setCategories(
-        getStoredOrDefault<MedicationCategoryOption>(
-          CATEGORIES_STORAGE_KEY,
-          normalizeMedicationCategoryOption,
-          DEFAULT_MEDICATION_CATEGORIES,
-        ),
+        shouldLoadStarterPlan
+          ? ensureItemsById(storedCategories, DEFAULT_MEDICATION_CATEGORIES)
+          : storedCategories,
       );
       setRoutineCategories(
-        getStoredOrDefault<RoutineCategory>(
-          ROUTINE_CATEGORIES_STORAGE_KEY,
-          normalizeRoutineCategory,
-          DEFAULT_ROUTINE_CATEGORIES,
+        (
+          shouldLoadStarterPlan
+            ? ensureItemsById(storedRoutineCategories, DEFAULT_ROUTINE_CATEGORIES)
+            : storedRoutineCategories
         ).sort((first, second) => first.sortOrder - second.sortOrder),
       );
       setToday(new Date());
@@ -892,12 +1203,10 @@ export default function MedTrackApp() {
       return [];
     }
 
-    const todayDay = getTodayDay(today);
-
     const entries: TodayMedication[] = [];
 
     activeMedications
-      .filter((medication) => medication.schedule.days.includes(todayDay))
+      .filter((medication) => isMedicationDueOnDate(medication, today))
       .forEach((medication) => {
         const scheduleType = getMedicationScheduleType(medication);
 
@@ -1071,11 +1380,11 @@ export default function MedTrackApp() {
     }));
   }
 
-  function handleDailyChange(isDaily: boolean) {
+  function handleDayModeChange(dayMode: MedicationDayMode) {
     setForm((currentForm) => ({
       ...currentForm,
-      daily: isDaily,
-      days: isDaily ? ALL_DAYS : [],
+      dayMode,
+      days: dayMode === "weekdays" ? currentForm.days : [...ALL_DAYS],
     }));
   }
 
@@ -1311,6 +1620,39 @@ export default function MedTrackApp() {
     toast.success("Routine category deleted");
   }
 
+  function handleImportStarterPlan() {
+    const starterMedications = createStarterMedicationPlan();
+    const activeMedicationNames = new Set(
+      medications
+        .filter((medication) => medication.isActive)
+        .map((medication) => normalizeMedicationName(medication.name)),
+    );
+    const medicationsToAdd = starterMedications.filter(
+      (medication) =>
+        !activeMedicationNames.has(normalizeMedicationName(medication.name)),
+    );
+
+    setCategories((currentCategories) =>
+      ensureItemsById(currentCategories, DEFAULT_MEDICATION_CATEGORIES),
+    );
+    setRoutineCategories((currentCategories) =>
+      ensureItemsById(currentCategories, DEFAULT_ROUTINE_CATEGORIES).sort(
+        (first, second) => first.sortOrder - second.sortOrder,
+      ),
+    );
+
+    if (medicationsToAdd.length === 0) {
+      toast.error("Starter plan is already in your active medications");
+      return;
+    }
+
+    setMedications((currentMedications) => [
+      ...currentMedications,
+      ...medicationsToAdd,
+    ]);
+    toast.success(`${medicationsToAdd.length} starter medications added`);
+  }
+
   function handleMedicationSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1321,11 +1663,12 @@ export default function MedTrackApp() {
     const order = normalizeOrder(form.order);
     const routineCategoryId =
       form.routineCategoryId || DEFAULT_ROUTINE_CATEGORY_ID;
-    const selectedDays = form.daily
-      ? ALL_DAYS
-      : WEEK_DAYS.map((day) => day.id).filter((day) =>
-          form.days.includes(day),
-        );
+    const selectedDays =
+      form.dayMode === "weekdays"
+        ? WEEK_DAYS.map((day) => day.id).filter((day) =>
+            form.days.includes(day),
+          )
+        : [...ALL_DAYS];
 
     if (!name || !dosage || !unit) {
       toast.error("Name, dosage, and unit are required");
@@ -1337,7 +1680,7 @@ export default function MedTrackApp() {
       return;
     }
 
-    if (selectedDays.length === 0) {
+    if (form.dayMode === "weekdays" && selectedDays.length === 0) {
       toast.error("Choose at least one day");
       return;
     }
@@ -1350,6 +1693,7 @@ export default function MedTrackApp() {
       category: form.category,
       schedule: {
         type: form.scheduleType,
+        dayMode: form.dayMode,
         times: form.scheduleType === "timed" ? times : [],
         days: selectedDays,
         order: form.scheduleType === "ordered" ? order : undefined,
@@ -1383,12 +1727,12 @@ export default function MedTrackApp() {
       unit: medication.unit,
       category: medication.category,
       scheduleType: getMedicationScheduleType(medication),
+      dayMode: getMedicationDayMode(medication.schedule),
       times: [...medication.schedule.times].sort(),
       timeInput: medication.schedule.times[0] ?? "08:00",
       order: getMedicationOrder(medication),
       routineCategoryId: getMedicationRoutineCategoryId(medication),
       days: [...medication.schedule.days],
-      daily: medication.schedule.days.length === WEEK_DAYS.length,
       notes: medication.notes,
     });
     setActiveTab("add");
@@ -1647,7 +1991,7 @@ export default function MedTrackApp() {
               onSubmit={handleMedicationSubmit}
               onAddTime={handleAddTime}
               onRemoveTime={handleRemoveTime}
-              onDailyChange={handleDailyChange}
+              onDayModeChange={handleDayModeChange}
               onDayToggle={handleDayToggle}
               onCancelEdit={() => {
                 resetForm();
@@ -1680,6 +2024,7 @@ export default function MedTrackApp() {
               onDeleteRoutineCategory={handleDeleteRoutineCategory}
               onCancelCategoryEdit={resetCategoryForm}
               onCancelRoutineCategoryEdit={resetRoutineCategoryForm}
+              onImportStarterPlan={handleImportStarterPlan}
             />
           )}
         </section>
@@ -1808,7 +2153,7 @@ function DashboardView({
                 </h3>
                 {orderedMedicationGroups.map((group) => (
                   <article
-                    key={`order-${group.order}`}
+                    key={`order-${group.routineCategoryId}-${group.order}`}
                     className="rounded-lg border border-zinc-200 bg-white p-4"
                   >
                     <div className="flex flex-col gap-3 border-b border-zinc-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2053,7 +2398,7 @@ function MedicationListView({
                 <div className="rounded-md bg-zinc-50 p-3">
                   <dt className="font-medium text-zinc-500">Days</dt>
                   <dd className="mt-1 text-zinc-800">
-                    {getMedicationDaysLabel(medication.schedule.days)}
+                    {getMedicationDaysLabel(medication.schedule)}
                   </dd>
                 </div>
               </dl>
@@ -2080,7 +2425,7 @@ function MedicationFormView({
   onSubmit,
   onAddTime,
   onRemoveTime,
-  onDailyChange,
+  onDayModeChange,
   onDayToggle,
   onCancelEdit,
 }: {
@@ -2091,7 +2436,7 @@ function MedicationFormView({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAddTime: () => void;
   onRemoveTime: (time: string) => void;
-  onDailyChange: (isDaily: boolean) => void;
+  onDayModeChange: (dayMode: MedicationDayMode) => void;
   onDayToggle: (dayId: WeekDay) => void;
   onCancelEdit: () => void;
 }) {
@@ -2318,40 +2663,62 @@ function MedicationFormView({
         )}
 
         <div className="mt-6">
-          <div className="mb-3 flex items-center justify-between gap-4">
-            <span className="text-sm font-medium text-zinc-700">Days</span>
-            <label className="inline-flex items-center gap-2 text-sm font-medium text-zinc-700">
-              <input
-                className="h-4 w-4 accent-emerald-600"
-                type="checkbox"
-                checked={form.daily}
-                onChange={(event) => onDailyChange(event.target.checked)}
-              />
-              Daily
-            </label>
-          </div>
+          <span className="mb-3 block text-sm font-medium text-zinc-700">
+            Day pattern
+          </span>
 
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-            {WEEK_DAYS.map((day) => {
-              const isSelected = form.days.includes(day.id);
+          <div className="grid gap-2 sm:grid-cols-2">
+            {DAY_MODE_OPTIONS.map((option) => {
+              const isSelected = form.dayMode === option.id;
 
               return (
                 <button
-                  key={day.id}
-                  className={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
+                  key={option.id}
+                  className={`rounded-md border px-3 py-2.5 text-left transition ${
                     isSelected
                       ? "border-emerald-600 bg-emerald-600 text-white"
                       : "border-zinc-200 text-zinc-600 hover:border-emerald-200 hover:bg-emerald-50"
-                  } ${form.daily ? "cursor-default opacity-80" : ""}`}
+                  }`}
                   type="button"
-                  onClick={() => onDayToggle(day.id)}
-                  disabled={form.daily}
+                  onClick={() => onDayModeChange(option.id)}
                 >
-                  {day.short}
+                  <span className="block text-sm font-semibold">
+                    {option.label}
+                  </span>
+                  <span
+                    className={`mt-0.5 block text-xs ${
+                      isSelected ? "text-emerald-50" : "text-zinc-500"
+                    }`}
+                  >
+                    {option.description}
+                  </span>
                 </button>
               );
             })}
           </div>
+
+          {form.dayMode === "weekdays" && (
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+              {WEEK_DAYS.map((day) => {
+                const isSelected = form.days.includes(day.id);
+
+                return (
+                  <button
+                    key={day.id}
+                    className={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
+                      isSelected
+                        ? "border-emerald-600 bg-emerald-600 text-white"
+                        : "border-zinc-200 text-zinc-600 hover:border-emerald-200 hover:bg-emerald-50"
+                    }`}
+                    type="button"
+                    onClick={() => onDayToggle(day.id)}
+                  >
+                    {day.short}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <label className="mt-6 block">
@@ -2481,6 +2848,7 @@ function SettingsView({
   onDeleteRoutineCategory,
   onCancelCategoryEdit,
   onCancelRoutineCategoryEdit,
+  onImportStarterPlan,
 }: {
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
@@ -2496,10 +2864,24 @@ function SettingsView({
   onDeleteRoutineCategory: (category: RoutineCategory) => void;
   onCancelCategoryEdit: () => void;
   onCancelRoutineCategoryEdit: () => void;
+  onImportStarterPlan: () => void;
 }) {
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHeader title="Settings" description="Categories and routine timing" />
+      <PageHeader
+        title="Settings"
+        description="Categories and routine timing"
+        action={
+          <button
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
+            type="button"
+            onClick={onImportStarterPlan}
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Import starter plan
+          </button>
+        }
+      />
 
       <div className="grid gap-5 xl:grid-cols-2">
         <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
