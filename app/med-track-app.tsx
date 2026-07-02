@@ -30,6 +30,7 @@ import type {
   IntakeLog,
   Medication,
   MedicationCategory,
+  MedicationScheduleType,
   WeekDay,
 } from "@/types";
 
@@ -41,8 +42,11 @@ type MedicationFormState = {
   dosage: string;
   unit: string;
   category: MedicationCategory;
+  scheduleType: MedicationScheduleType;
   times: string[];
   timeInput: string;
+  order: number;
+  groupName: string;
   days: WeekDay[];
   daily: boolean;
   notes: string;
@@ -50,7 +54,18 @@ type MedicationFormState = {
 
 type TodayMedication = {
   medication: Medication;
-  time: string;
+  scheduleType: MedicationScheduleType;
+  time: string | null;
+  order: number | null;
+  groupName: string;
+  isTaken: boolean;
+};
+
+type OrderedMedicationGroup = {
+  order: number;
+  groupName: string;
+  entries: TodayMedication[];
+  takenCount: number;
   isTaken: boolean;
 };
 
@@ -58,6 +73,7 @@ const LOGIN_USERNAME = "mail@mehrdadnaderi.com";
 const LOGIN_PASSWORD = "Naderi$2050";
 const MEDICATIONS_STORAGE_KEY = "medtrack-medications";
 const LOGS_STORAGE_KEY = "medtrack-intake-logs";
+const AUTH_STORAGE_KEY = "medtrack-authenticated";
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
   { id: "sunday", label: "Sunday", short: "Sun" },
@@ -141,8 +157,11 @@ function createEmptyForm(): MedicationFormState {
     dosage: "",
     unit: "mg",
     category: "other",
+    scheduleType: "ordered",
     times: ["08:00"],
     timeInput: "08:00",
+    order: 1,
+    groupName: "",
     days: ALL_DAYS,
     daily: true,
     notes: "",
@@ -168,6 +187,12 @@ function isMedicationCategory(value: unknown): value is MedicationCategory {
   );
 }
 
+function isMedicationScheduleType(
+  value: unknown,
+): value is MedicationScheduleType {
+  return value === "timed" || value === "ordered";
+}
+
 function isWeekDay(value: unknown): value is WeekDay {
   return typeof value === "string" && ALL_DAYS.includes(value as WeekDay);
 }
@@ -182,6 +207,21 @@ function normalizeTime(value: unknown) {
   }
 
   return /^\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function normalizeOrder(value: unknown) {
+  const numericValue =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : 1;
+
+  if (!Number.isFinite(numericValue)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.round(numericValue));
 }
 
 function normalizeMedication(value: unknown): Medication | null {
@@ -199,6 +239,12 @@ function normalizeMedication(value: unknown): Medication | null {
   const days = Array.isArray(schedule.days)
     ? schedule.days.filter(isWeekDay)
     : [];
+  const scheduleType = isMedicationScheduleType(schedule.type)
+    ? schedule.type
+    : times.length > 0
+      ? "timed"
+      : "ordered";
+  const groupName = normalizeString(schedule.groupName).trim();
 
   return {
     id: normalizeString(value.id, createId()),
@@ -207,8 +253,17 @@ function normalizeMedication(value: unknown): Medication | null {
     unit: normalizeString(value.unit, "mg"),
     category: isMedicationCategory(value.category) ? value.category : "other",
     schedule: {
-      times: times.length > 0 ? Array.from(new Set(times)).sort() : ["08:00"],
+      type: scheduleType,
+      times:
+        scheduleType === "timed" && times.length > 0
+          ? Array.from(new Set(times)).sort()
+          : [],
       days: days.length > 0 ? days : ALL_DAYS,
+      order: scheduleType === "ordered" ? normalizeOrder(schedule.order) : 1,
+      groupName:
+        scheduleType === "ordered" && groupName.length > 0
+          ? groupName
+          : undefined,
     },
     notes: normalizeString(value.notes),
     isActive: typeof value.isActive === "boolean" ? value.isActive : true,
@@ -221,6 +276,13 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
   }
 
   const takenAt = normalizeString(value.takenAt, new Date().toISOString());
+  const scheduledTime = normalizeTime(value.scheduledTime);
+  const scheduleType = isMedicationScheduleType(value.scheduleType)
+    ? value.scheduleType
+    : scheduledTime
+      ? "timed"
+      : "ordered";
+  const groupName = normalizeString(value.groupName).trim();
 
   return {
     id: normalizeString(value.id, createId()),
@@ -229,7 +291,13 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
     dosage: normalizeString(value.dosage),
     unit: normalizeString(value.unit, "mg"),
     category: isMedicationCategory(value.category) ? value.category : "other",
-    scheduledTime: normalizeTime(value.scheduledTime) ?? "08:00",
+    scheduleType,
+    scheduledTime: scheduleType === "timed" ? scheduledTime ?? "08:00" : null,
+    order: scheduleType === "ordered" ? normalizeOrder(value.order) : undefined,
+    groupName:
+      scheduleType === "ordered" && groupName.length > 0
+        ? groupName
+        : undefined,
     takenAt,
     date: normalizeString(value.date, takenAt.slice(0, 10)),
     status: "taken",
@@ -280,6 +348,35 @@ function writeStoredArray<T>(key: string, value: T[]) {
   }
 }
 
+function readStoredAuth() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(AUTH_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredAuth(shouldStaySignedIn: boolean) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (shouldStaySignedIn) {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, "true");
+      return;
+    }
+
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch {
+    toast.error("Unable to update the sign-in state for this browser");
+  }
+}
+
 function formatLogDate(value: string) {
   try {
     return format(parseISO(value), "MMM d, yyyy h:mm a");
@@ -314,6 +411,84 @@ function getMedicationDaysLabel(days: WeekDay[]) {
     .join(", ");
 }
 
+function getMedicationScheduleType(medication: Medication) {
+  if (medication.schedule.type) {
+    return medication.schedule.type;
+  }
+
+  return medication.schedule.times.length > 0 ? "timed" : "ordered";
+}
+
+function getMedicationOrder(medication: Medication) {
+  return normalizeOrder(medication.schedule.order);
+}
+
+function getMedicationGroupName(medication: Medication) {
+  return medication.schedule.groupName?.trim() ?? "";
+}
+
+function getTodayMedicationKey(entry: TodayMedication) {
+  return entry.scheduleType === "timed"
+    ? `${entry.medication.id}:time:${entry.time}`
+    : `${entry.medication.id}:order:${entry.order ?? 1}`;
+}
+
+function isTodayMedicationTaken(
+  logs: IntakeLog[],
+  medication: Medication,
+  scheduleType: MedicationScheduleType,
+  todayKey: string,
+  time: string | null,
+) {
+  return logs.some((log) => {
+    if (log.medicationId !== medication.id || log.date !== todayKey) {
+      return false;
+    }
+
+    const logScheduleType =
+      log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
+
+    if (scheduleType === "timed") {
+      return logScheduleType === "timed" && log.scheduledTime === time;
+    }
+
+    return logScheduleType === "ordered";
+  });
+}
+
+function getEntryScheduleLabel(entry: TodayMedication) {
+  if (entry.scheduleType === "timed" && entry.time) {
+    return `at ${formatReadableTime(entry.time)}`;
+  }
+
+  const groupName = entry.groupName ? ` · ${entry.groupName}` : "";
+  return `step ${entry.order ?? 1}${groupName}`;
+}
+
+function getMedicationScheduleLabel(medication: Medication) {
+  const scheduleType = getMedicationScheduleType(medication);
+
+  if (scheduleType === "timed") {
+    return medication.schedule.times
+      .map((time) => formatReadableTime(time))
+      .join(", ");
+  }
+
+  const groupName = getMedicationGroupName(medication);
+  return `Step ${getMedicationOrder(medication)}${groupName ? ` · ${groupName}` : ""}`;
+}
+
+function getLogScheduleLabel(log: IntakeLog) {
+  const scheduleType =
+    log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
+
+  if (scheduleType === "timed" && log.scheduledTime) {
+    return `scheduled for ${formatReadableTime(log.scheduledTime)}`;
+  }
+
+  return `order step ${log.order ?? 1}${log.groupName ? ` · ${log.groupName}` : ""}`;
+}
+
 export default function MedTrackApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState("");
@@ -337,6 +512,7 @@ export default function MedTrackApp() {
         return;
       }
 
+      setIsAuthenticated(readStoredAuth());
       setMedications(
         readStoredArray<Medication>(
           MEDICATIONS_STORAGE_KEY,
@@ -391,21 +567,64 @@ export default function MedTrackApp() {
 
     const todayDay = getTodayDay(today);
 
-    return activeMedications
+    const entries: TodayMedication[] = [];
+
+    activeMedications
       .filter((medication) => medication.schedule.days.includes(todayDay))
-      .flatMap((medication) =>
-        medication.schedule.times.map((time) => ({
+      .forEach((medication) => {
+        const scheduleType = getMedicationScheduleType(medication);
+
+        if (scheduleType === "timed") {
+          medication.schedule.times.forEach((time) => {
+            entries.push({
+              medication,
+              scheduleType,
+              time,
+              order: null,
+              groupName: "",
+              isTaken: isTodayMedicationTaken(
+                logs,
+                medication,
+                scheduleType,
+                todayKey,
+                time,
+              ),
+            });
+          });
+          return;
+        }
+
+        entries.push({
           medication,
-          time,
-          isTaken: logs.some(
-            (log) =>
-              log.medicationId === medication.id &&
-              log.scheduledTime === time &&
-              log.date === todayKey,
+          scheduleType,
+          time: null,
+          order: getMedicationOrder(medication),
+          groupName: getMedicationGroupName(medication),
+          isTaken: isTodayMedicationTaken(
+            logs,
+            medication,
+            scheduleType,
+            todayKey,
+            null,
           ),
-        })),
-      )
-      .sort((first, second) => first.time.localeCompare(second.time));
+        });
+      });
+
+    return entries
+      .sort((first, second) => {
+        if (first.scheduleType !== second.scheduleType) {
+          return first.scheduleType === "timed" ? -1 : 1;
+        }
+
+        if (first.scheduleType === "timed" && second.scheduleType === "timed") {
+          return (first.time ?? "").localeCompare(second.time ?? "");
+        }
+
+        return (
+          (first.order ?? 1) - (second.order ?? 1) ||
+          first.medication.name.localeCompare(second.medication.name)
+        );
+      });
   }, [activeMedications, logs, today, todayKey]);
 
   const sortedLogs = useMemo(
@@ -421,17 +640,58 @@ export default function MedTrackApp() {
     (medication) => medication.isTaken,
   ).length;
 
+  const orderedMedicationGroups = useMemo<OrderedMedicationGroup[]>(() => {
+    const groups = new Map<number, TodayMedication[]>();
+
+    todayMedications
+      .filter((entry) => entry.scheduleType === "ordered")
+      .forEach((entry) => {
+        const order = entry.order ?? 1;
+        groups.set(order, [...(groups.get(order) ?? []), entry]);
+      });
+
+    return Array.from(groups.entries())
+      .sort(([firstOrder], [secondOrder]) => firstOrder - secondOrder)
+      .map(([order, entries]) => {
+        const sortedEntries = [...entries].sort((first, second) =>
+          first.medication.name.localeCompare(second.medication.name),
+        );
+        const firstGroupName =
+          sortedEntries.find((entry) => entry.groupName)?.groupName ?? "";
+        const takenCount = sortedEntries.filter((entry) => entry.isTaken).length;
+
+        return {
+          order,
+          groupName: firstGroupName,
+          entries: sortedEntries,
+          takenCount,
+          isTaken: takenCount === sortedEntries.length,
+        };
+      });
+  }, [todayMedications]);
+
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (username === LOGIN_USERNAME && password === LOGIN_PASSWORD) {
+      writeStoredAuth(true);
       setIsAuthenticated(true);
+      setUsername("");
       setPassword("");
       toast.success("Welcome back to MedTrack");
       return;
     }
 
     toast.error("Invalid username or password");
+  }
+
+  function handleLogout() {
+    writeStoredAuth(false);
+    setIsAuthenticated(false);
+    setUsername("");
+    setPassword("");
+    setActiveTab("dashboard");
+    toast.success("Signed out");
   }
 
   function resetForm() {
@@ -491,6 +751,8 @@ export default function MedTrackApp() {
     const dosage = form.dosage.trim();
     const unit = form.unit.trim();
     const times = Array.from(new Set(form.times)).sort();
+    const order = normalizeOrder(form.order);
+    const groupName = form.groupName.trim();
     const selectedDays = form.daily
       ? ALL_DAYS
       : WEEK_DAYS.map((day) => day.id).filter((day) =>
@@ -502,7 +764,7 @@ export default function MedTrackApp() {
       return;
     }
 
-    if (times.length === 0) {
+    if (form.scheduleType === "timed" && times.length === 0) {
       toast.error("Add at least one scheduled time");
       return;
     }
@@ -519,8 +781,14 @@ export default function MedTrackApp() {
       unit,
       category: form.category,
       schedule: {
-        times,
+        type: form.scheduleType,
+        times: form.scheduleType === "timed" ? times : [],
         days: selectedDays,
+        order: form.scheduleType === "ordered" ? order : undefined,
+        groupName:
+          form.scheduleType === "ordered" && groupName.length > 0
+            ? groupName
+            : undefined,
       },
       notes: form.notes.trim(),
       isActive: true,
@@ -548,8 +816,11 @@ export default function MedTrackApp() {
       dosage: medication.dosage,
       unit: medication.unit,
       category: medication.category,
+      scheduleType: getMedicationScheduleType(medication),
       times: [...medication.schedule.times].sort(),
       timeInput: medication.schedule.times[0] ?? "08:00",
+      order: getMedicationOrder(medication),
+      groupName: getMedicationGroupName(medication),
       days: [...medication.schedule.days],
       daily: medication.schedule.days.length === WEEK_DAYS.length,
       notes: medication.notes,
@@ -594,7 +865,13 @@ export default function MedTrackApp() {
       dosage: entry.medication.dosage,
       unit: entry.medication.unit,
       category: entry.medication.category,
-      scheduledTime: entry.time,
+      scheduleType: entry.scheduleType,
+      scheduledTime: entry.scheduleType === "timed" ? entry.time : null,
+      order: entry.scheduleType === "ordered" ? entry.order ?? 1 : undefined,
+      groupName:
+        entry.scheduleType === "ordered" && entry.groupName
+          ? entry.groupName
+          : undefined,
       takenAt: new Date().toISOString(),
       date: todayKey,
       status: "taken",
@@ -603,6 +880,41 @@ export default function MedTrackApp() {
 
     setLogs((currentLogs) => [log, ...currentLogs]);
     toast.success(`${entry.medication.name} marked as taken`);
+  }
+
+  function handleMarkGroupAsTaken(entries: TodayMedication[]) {
+    if (!todayKey) {
+      toast.error("The schedule is still loading");
+      return;
+    }
+
+    const pendingEntries = entries.filter((entry) => !entry.isTaken);
+
+    if (pendingEntries.length === 0) {
+      toast.error("This step is already marked as taken");
+      return;
+    }
+
+    const takenAt = new Date().toISOString();
+    const nextLogs = pendingEntries.map<IntakeLog>((entry) => ({
+      id: createId(),
+      medicationId: entry.medication.id,
+      medicationName: entry.medication.name,
+      dosage: entry.medication.dosage,
+      unit: entry.medication.unit,
+      category: entry.medication.category,
+      scheduleType: entry.scheduleType,
+      scheduledTime: null,
+      order: entry.order ?? 1,
+      groupName: entry.groupName || undefined,
+      takenAt,
+      date: todayKey,
+      status: "taken",
+      notes: entry.medication.notes || undefined,
+    }));
+
+    setLogs((currentLogs) => [...nextLogs, ...currentLogs]);
+    toast.success("Step marked as taken");
   }
 
   if (!isStorageReady || !today) {
@@ -691,7 +1003,7 @@ export default function MedTrackApp() {
             <button
               className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50 lg:mt-7 lg:w-full lg:justify-center"
               type="button"
-              onClick={() => setIsAuthenticated(false)}
+              onClick={handleLogout}
             >
               <LogOut className="h-4 w-4" aria-hidden="true" />
               Log out
@@ -727,9 +1039,11 @@ export default function MedTrackApp() {
             <DashboardView
               activeMedicationCount={activeMedications.length}
               todayMedications={todayMedications}
+              orderedMedicationGroups={orderedMedicationGroups}
               takenTodayCount={takenTodayCount}
               logCount={logs.length}
               onMarkAsTaken={handleMarkAsTaken}
+              onMarkGroupAsTaken={handleMarkGroupAsTaken}
               onAddMedication={() => setActiveTab("add")}
             />
           )}
@@ -769,18 +1083,26 @@ export default function MedTrackApp() {
 function DashboardView({
   activeMedicationCount,
   todayMedications,
+  orderedMedicationGroups,
   takenTodayCount,
   logCount,
   onMarkAsTaken,
+  onMarkGroupAsTaken,
   onAddMedication,
 }: {
   activeMedicationCount: number;
   todayMedications: TodayMedication[];
+  orderedMedicationGroups: OrderedMedicationGroup[];
   takenTodayCount: number;
   logCount: number;
   onMarkAsTaken: (entry: TodayMedication) => void;
+  onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
 }) {
+  const timedMedications = todayMedications.filter(
+    (entry) => entry.scheduleType === "timed",
+  );
+
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
@@ -849,57 +1171,141 @@ function DashboardView({
             onAction={onAddMedication}
           />
         ) : (
-          <div className="space-y-3">
-            {todayMedications.map((entry) => (
-              <div
-                key={`${entry.medication.id}-${entry.time}`}
-                className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="flex gap-3">
-                  <div
-                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${
-                      CATEGORY_META[entry.medication.category].iconClassName
-                    }`}
-                  >
-                    <Pill className="h-5 w-5" aria-hidden="true" />
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-semibold text-zinc-950">
-                        {entry.medication.name}
-                      </h3>
-                      <CategoryBadge category={entry.medication.category} />
-                    </div>
-                    <p className="mt-1 text-sm text-zinc-600">
-                      {entry.medication.dosage} {entry.medication.unit} at{" "}
-                      {formatReadableTime(entry.time)}
-                    </p>
-                    {entry.medication.notes && (
-                      <p className="mt-1 text-sm text-zinc-500">
-                        {entry.medication.notes}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <button
-                  className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
-                    entry.isTaken
-                      ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                      : "bg-emerald-600 text-white hover:bg-emerald-700"
-                  }`}
-                  type="button"
-                  onClick={() => onMarkAsTaken(entry)}
-                  disabled={entry.isTaken}
-                >
-                  <Check className="h-4 w-4" aria-hidden="true" />
-                  {entry.isTaken ? "Taken" : "Mark as Taken"}
-                </button>
+          <div className="space-y-5">
+            {timedMedications.length > 0 && (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-normal text-zinc-500">
+                  Timed doses
+                </h3>
+                {timedMedications.map((entry) => (
+                  <MedicationDoseCard
+                    key={getTodayMedicationKey(entry)}
+                    entry={entry}
+                    onMarkAsTaken={onMarkAsTaken}
+                  />
+                ))}
               </div>
-            ))}
+            )}
+
+            {orderedMedicationGroups.length > 0 && (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-normal text-zinc-500">
+                  Routine order
+                </h3>
+                {orderedMedicationGroups.map((group) => (
+                  <article
+                    key={`order-${group.order}`}
+                    className="rounded-lg border border-zinc-200 bg-white p-4"
+                  >
+                    <div className="flex flex-col gap-3 border-b border-zinc-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h4 className="font-semibold text-zinc-950">
+                            Step {group.order}
+                          </h4>
+                          {group.entries.length > 1 && (
+                            <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-800">
+                              Use together
+                            </span>
+                          )}
+                        </div>
+                        {group.groupName && (
+                          <p className="mt-1 text-sm text-zinc-500">
+                            {group.groupName}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
+                          group.isTaken
+                            ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : "bg-emerald-600 text-white hover:bg-emerald-700"
+                        }`}
+                        type="button"
+                        onClick={() => onMarkGroupAsTaken(group.entries)}
+                        disabled={group.isTaken}
+                      >
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                        {group.isTaken ? "Step taken" : "Mark Step as Taken"}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 space-y-3">
+                      {group.entries.map((entry) => (
+                        <MedicationDoseCard
+                          key={getTodayMedicationKey(entry)}
+                          entry={entry}
+                          onMarkAsTaken={onMarkAsTaken}
+                          compact
+                        />
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function MedicationDoseCard({
+  entry,
+  onMarkAsTaken,
+  compact = false,
+}: {
+  entry: TodayMedication;
+  onMarkAsTaken: (entry: TodayMedication) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white ${
+        compact ? "p-3" : "p-4"
+      } sm:flex-row sm:items-center sm:justify-between`}
+    >
+      <div className="flex gap-3">
+        <div
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${
+            CATEGORY_META[entry.medication.category].iconClassName
+          }`}
+        >
+          <Pill className="h-5 w-5" aria-hidden="true" />
+        </div>
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-semibold text-zinc-950">
+              {entry.medication.name}
+            </h3>
+            <CategoryBadge category={entry.medication.category} />
+          </div>
+          <p className="mt-1 text-sm text-zinc-600">
+            {entry.medication.dosage} {entry.medication.unit}{" "}
+            {getEntryScheduleLabel(entry)}
+          </p>
+          {entry.medication.notes && (
+            <p className="mt-1 text-sm text-zinc-500">
+              {entry.medication.notes}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <button
+        className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
+          entry.isTaken
+            ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+            : "bg-emerald-600 text-white hover:bg-emerald-700"
+        }`}
+        type="button"
+        onClick={() => onMarkAsTaken(entry)}
+        disabled={entry.isTaken}
+      >
+        <Check className="h-4 w-4" aria-hidden="true" />
+        {entry.isTaken ? "Taken" : "Mark as Taken"}
+      </button>
     </div>
   );
 }
@@ -995,11 +1401,9 @@ function MedicationListView({
 
               <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
                 <div className="rounded-md bg-zinc-50 p-3">
-                  <dt className="font-medium text-zinc-500">Times</dt>
+                  <dt className="font-medium text-zinc-500">Schedule</dt>
                   <dd className="mt-1 text-zinc-800">
-                    {medication.schedule.times
-                      .map((time) => formatReadableTime(time))
-                      .join(", ")}
+                    {getMedicationScheduleLabel(medication)}
                   </dd>
                 </div>
                 <div className="rounded-md bg-zinc-50 p-3">
@@ -1137,50 +1541,126 @@ function MedicationFormView({
 
         <div className="mt-6">
           <span className="mb-2 block text-sm font-medium text-zinc-700">
-            Times
+            Schedule type
           </span>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <input
-              className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 sm:max-w-48"
-              type="time"
-              value={form.timeInput}
-              onChange={(event) =>
-                setForm((currentForm) => ({
-                  ...currentForm,
-                  timeInput: event.target.value,
-                }))
-              }
-            />
-            <button
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
-              type="button"
-              onClick={onAddTime}
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Add time
-            </button>
-          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {[
+              { id: "ordered" as const, label: "Routine order", icon: ClipboardList },
+              { id: "timed" as const, label: "Specific times", icon: Clock3 },
+            ].map((option) => {
+              const Icon = option.icon;
+              const isSelected = form.scheduleType === option.id;
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            {form.times.map((time) => (
-              <span
-                key={time}
-                className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800"
-              >
-                {formatReadableTime(time)}
+              return (
                 <button
-                  className="text-emerald-700 transition hover:text-rose-700"
+                  key={option.id}
+                  className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2.5 text-sm font-semibold transition ${
+                    isSelected
+                      ? "border-emerald-600 bg-emerald-600 text-white"
+                      : "border-zinc-200 text-zinc-600 hover:border-emerald-200 hover:bg-emerald-50"
+                  }`}
                   type="button"
-                  onClick={() => onRemoveTime(time)}
-                  title="Remove time"
-                  aria-label={`Remove ${formatReadableTime(time)}`}
+                  onClick={() =>
+                    setForm((currentForm) => ({
+                      ...currentForm,
+                      scheduleType: option.id,
+                    }))
+                  }
                 >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  <Icon className="h-4 w-4" aria-hidden="true" />
+                  {option.label}
                 </button>
-              </span>
-            ))}
+              );
+            })}
           </div>
         </div>
+
+        {form.scheduleType === "timed" ? (
+          <div className="mt-6">
+            <span className="mb-2 block text-sm font-medium text-zinc-700">
+              Times
+            </span>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <input
+                className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 sm:max-w-48"
+                type="time"
+                value={form.timeInput}
+                onChange={(event) =>
+                  setForm((currentForm) => ({
+                    ...currentForm,
+                    timeInput: event.target.value,
+                  }))
+                }
+              />
+              <button
+                className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                type="button"
+                onClick={onAddTime}
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Add time
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              {form.times.map((time) => (
+                <span
+                  key={time}
+                  className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800"
+                >
+                  {formatReadableTime(time)}
+                  <button
+                    className="text-emerald-700 transition hover:text-rose-700"
+                    type="button"
+                    onClick={() => onRemoveTime(time)}
+                    title="Remove time"
+                    aria-label={`Remove ${formatReadableTime(time)}`}
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-6 grid gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-2 block text-sm font-medium text-zinc-700">
+                Step
+              </span>
+              <input
+                className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                type="number"
+                min={1}
+                step={1}
+                value={form.order}
+                onChange={(event) =>
+                  setForm((currentForm) => ({
+                    ...currentForm,
+                    order: normalizeOrder(event.target.value),
+                  }))
+                }
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-medium text-zinc-700">
+                Group label
+              </span>
+              <input
+                className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                value={form.groupName}
+                onChange={(event) =>
+                  setForm((currentForm) => ({
+                    ...currentForm,
+                    groupName: event.target.value,
+                  }))
+                }
+                placeholder="Morning routine"
+              />
+            </label>
+          </div>
+        )}
 
         <div className="mt-6">
           <div className="mb-3 flex items-center justify-between gap-4">
@@ -1295,8 +1775,7 @@ function HistoryView({ logs }: { logs: IntakeLog[] }) {
                       <CategoryBadge category={log.category} />
                     </div>
                     <p className="mt-1 text-sm text-zinc-600">
-                      {log.dosage} {log.unit} scheduled for{" "}
-                      {formatReadableTime(log.scheduledTime)}
+                      {log.dosage} {log.unit} · {getLogScheduleLabel(log)}
                     </p>
                   </div>
                 </div>

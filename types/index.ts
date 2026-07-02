@@ -14,9 +14,14 @@ export type WeekDay =
   | "friday"
   | "saturday";
 
+export type MedicationScheduleType = "timed" | "ordered";
+
 export interface MedicationSchedule {
+  type: MedicationScheduleType;
   times: string[];
   days: WeekDay[];
+  order?: number;
+  groupName?: string;
 }
 
 export interface Medication {
@@ -37,7 +42,10 @@ export interface IntakeLog {
   dosage: string;
   unit: string;
   category: MedicationCategory;
-  scheduledTime: string;
+  scheduleType: MedicationScheduleType;
+  scheduledTime: string | null;
+  order?: number;
+  groupName?: string;
   takenAt: string;
   date: string;
   status: "taken";
