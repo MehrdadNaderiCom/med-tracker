@@ -10,6 +10,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronDown,
   ClipboardList,
   Clock3,
   CloudOff,
@@ -3189,19 +3190,61 @@ function DashboardView({
   const timedMedications = todayMedications.filter(
     (entry) => entry.scheduleType === "timed",
   );
-  const orderedSections = routineCategories
-    .map((routineCategory) => ({
-      routineCategory,
-      groups: orderedMedicationGroups.filter(
-        (group) => group.routineCategoryId === routineCategory.id,
+  const pendingTimedMedications = timedMedications.filter(
+    (entry) => !entry.isTaken,
+  );
+  const completedTimedMedications = timedMedications.filter(
+    (entry) => entry.isTaken,
+  );
+  const buildOrderedSections = (entryFilter: (entry: TodayMedication) => boolean) =>
+    routineCategories
+      .map((routineCategory) => ({
+        routineCategory,
+        groups: orderedMedicationGroups.flatMap((group) => {
+          if (group.routineCategoryId !== routineCategory.id) {
+            return [];
+          }
+
+          const entries = group.entries.filter(entryFilter);
+
+          if (entries.length === 0) {
+            return [];
+          }
+
+          const takenCount = entries.filter((entry) => entry.isTaken).length;
+
+          return [
+            {
+              ...group,
+              entries,
+              takenCount,
+              isTaken: takenCount === entries.length,
+            },
+          ];
+        }),
+      }))
+      .filter((section) => section.groups.length > 0);
+  const pendingOrderedSections = buildOrderedSections((entry) => !entry.isTaken);
+  const completedOrderedSections = buildOrderedSections((entry) => entry.isTaken);
+  const completedOrderedCount = completedOrderedSections.reduce(
+    (sectionTotal, section) =>
+      sectionTotal +
+      section.groups.reduce(
+        (groupTotal, group) => groupTotal + group.entries.length,
+        0,
       ),
-    }))
-    .filter((section) => section.groups.length > 0);
+    0,
+  );
+  const completedChecklistCount =
+    completedTimedMedications.length + completedOrderedCount;
+  const hasPendingChecklistItems =
+    pendingTimedMedications.length > 0 || pendingOrderedSections.length > 0;
   const completionRate =
     todayMedications.length === 0
       ? 0
       : Math.round((takenTodayCount / todayMedications.length) * 100);
   const pendingGroups = orderedMedicationGroups.filter((group) => !group.isTaken);
+  const [isCompletedOpen, setIsCompletedOpen] = useState(false);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -3314,39 +3357,132 @@ function DashboardView({
             />
           ) : (
             <div className="space-y-4">
-              {timedMedications.length > 0 && (
-                <section className="rounded-lg border border-zinc-200 p-3">
-                  <h3 className="mb-3 text-sm font-semibold uppercase tracking-normal text-zinc-500">
-                    Timed doses
-                  </h3>
-                  <div className="space-y-2">
-                    {timedMedications.map((entry) => (
-                      <MedicationDoseCard
-                        key={getTodayMedicationKey(entry)}
-                        entry={entry}
-                        categories={categories}
-                        routineCategories={routineCategories}
-                        onMarkAsTaken={onMarkAsTaken}
-                        onUndoTaken={onUndoTaken}
-                      />
-                    ))}
+              {hasPendingChecklistItems ? (
+                <>
+                  {pendingTimedMedications.length > 0 && (
+                    <section className="rounded-lg border border-zinc-200 p-3">
+                      <h3 className="mb-3 text-sm font-semibold uppercase tracking-normal text-zinc-500">
+                        Timed doses
+                      </h3>
+                      <div className="space-y-2">
+                        {pendingTimedMedications.map((entry) => (
+                          <MedicationDoseCard
+                            key={getTodayMedicationKey(entry)}
+                            entry={entry}
+                            categories={categories}
+                            routineCategories={routineCategories}
+                            onMarkAsTaken={onMarkAsTaken}
+                            onUndoTaken={onUndoTaken}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {pendingOrderedSections.map((section) => (
+                    <RoutineChecklistSection
+                      key={section.routineCategory.id}
+                      routineCategory={section.routineCategory}
+                      groups={section.groups}
+                      categories={categories}
+                      routineCategories={routineCategories}
+                      onMarkAsTaken={onMarkAsTaken}
+                      onUndoTaken={onUndoTaken}
+                      onMarkGroupAsTaken={onMarkGroupAsTaken}
+                      onUndoGroupTaken={onUndoGroupTaken}
+                    />
+                  ))}
+                </>
+              ) : (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-600 text-white">
+                      <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-emerald-950">
+                        No pending items
+                      </h3>
+                      <p className="text-sm text-emerald-800">
+                        Completed items are grouped below.
+                      </p>
+                    </div>
                   </div>
-                </section>
+                </div>
               )}
 
-              {orderedSections.map((section) => (
-                <RoutineChecklistSection
-                  key={section.routineCategory.id}
-                  routineCategory={section.routineCategory}
-                  groups={section.groups}
-                  categories={categories}
-                  routineCategories={routineCategories}
-                  onMarkAsTaken={onMarkAsTaken}
-                  onUndoTaken={onUndoTaken}
-                  onMarkGroupAsTaken={onMarkGroupAsTaken}
-                  onUndoGroupTaken={onUndoGroupTaken}
-                />
-              ))}
+              {completedChecklistCount > 0 && (
+                <section className="rounded-lg border border-zinc-200 bg-zinc-50">
+                  <button
+                    className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-3 text-left transition hover:bg-white"
+                    type="button"
+                    onClick={() =>
+                      setIsCompletedOpen((currentValue) => !currentValue)
+                    }
+                    aria-expanded={isCompletedOpen}
+                  >
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-emerald-100 text-emerald-700">
+                        <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold text-zinc-950">
+                          Completed today
+                        </span>
+                        <span className="block text-xs font-medium text-zinc-500">
+                          {`${completedChecklistCount} ${
+                            completedChecklistCount === 1 ? "item" : "items"
+                          } done`}
+                        </span>
+                      </span>
+                    </span>
+                    <ChevronDown
+                      className={`h-5 w-5 shrink-0 text-zinc-500 transition ${
+                        isCompletedOpen ? "rotate-180" : ""
+                      }`}
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  {isCompletedOpen && (
+                    <div className="space-y-3 border-t border-zinc-200 p-3">
+                      {completedTimedMedications.length > 0 && (
+                        <section className="rounded-lg border border-zinc-200 bg-white p-3">
+                          <h3 className="mb-3 text-sm font-semibold uppercase tracking-normal text-zinc-500">
+                            Timed doses
+                          </h3>
+                          <div className="space-y-2">
+                            {completedTimedMedications.map((entry) => (
+                              <MedicationDoseCard
+                                key={getTodayMedicationKey(entry)}
+                                entry={entry}
+                                categories={categories}
+                                routineCategories={routineCategories}
+                                onMarkAsTaken={onMarkAsTaken}
+                                onUndoTaken={onUndoTaken}
+                              />
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
+                      {completedOrderedSections.map((section) => (
+                        <RoutineChecklistSection
+                          key={`completed-${section.routineCategory.id}`}
+                          routineCategory={section.routineCategory}
+                          groups={section.groups}
+                          categories={categories}
+                          routineCategories={routineCategories}
+                          onMarkAsTaken={onMarkAsTaken}
+                          onUndoTaken={onUndoTaken}
+                          onMarkGroupAsTaken={onMarkGroupAsTaken}
+                          onUndoGroupTaken={onUndoGroupTaken}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
             </div>
           )}
         </section>
