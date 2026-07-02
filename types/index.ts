@@ -1,9 +1,12 @@
-export type MedicationCategory =
-  | "skin"
-  | "hair"
-  | "blood-pressure"
-  | "liver"
-  | "other";
+export type CategoryTone =
+  | "emerald"
+  | "sky"
+  | "rose"
+  | "amber"
+  | "violet"
+  | "zinc";
+
+export type MedicationCategory = string;
 
 export type WeekDay =
   | "sunday"
@@ -21,7 +24,21 @@ export interface MedicationSchedule {
   times: string[];
   days: WeekDay[];
   order?: number;
+  routineCategoryId?: string;
   groupName?: string;
+}
+
+export interface MedicationCategoryOption {
+  id: string;
+  name: string;
+  tone: CategoryTone;
+}
+
+export interface RoutineCategory {
+  id: string;
+  name: string;
+  tone: CategoryTone;
+  sortOrder: number;
 }
 
 export interface Medication {
@@ -45,6 +62,8 @@ export interface IntakeLog {
   scheduleType: MedicationScheduleType;
   scheduledTime: string | null;
   order?: number;
+  routineCategoryId?: string;
+  routineCategoryName?: string;
   groupName?: string;
   takenAt: string;
   date: string;

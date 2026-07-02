@@ -17,6 +17,7 @@ import {
   Pill,
   Plus,
   Save,
+  Settings,
   ShieldCheck,
   Trash2,
   UserRound,
@@ -27,14 +28,17 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { MedTrackLoading } from "./med-track-loading";
 import type {
+  CategoryTone,
   IntakeLog,
   Medication,
   MedicationCategory,
+  MedicationCategoryOption,
   MedicationScheduleType,
+  RoutineCategory,
   WeekDay,
 } from "@/types";
 
-type TabId = "dashboard" | "medications" | "add" | "history";
+type TabId = "dashboard" | "medications" | "add" | "history" | "settings";
 
 type MedicationFormState = {
   id: string | null;
@@ -46,7 +50,7 @@ type MedicationFormState = {
   times: string[];
   timeInput: string;
   order: number;
-  groupName: string;
+  routineCategoryId: string;
   days: WeekDay[];
   daily: boolean;
   notes: string;
@@ -57,16 +61,30 @@ type TodayMedication = {
   scheduleType: MedicationScheduleType;
   time: string | null;
   order: number | null;
-  groupName: string;
+  routineCategoryId: string | null;
   isTaken: boolean;
 };
 
 type OrderedMedicationGroup = {
+  routineCategoryId: string;
+  routineCategoryName: string;
   order: number;
-  groupName: string;
   entries: TodayMedication[];
   takenCount: number;
   isTaken: boolean;
+};
+
+type CategoryFormState = {
+  id: string | null;
+  name: string;
+  tone: CategoryTone;
+};
+
+type RoutineCategoryFormState = {
+  id: string | null;
+  name: string;
+  tone: CategoryTone;
+  sortOrder: number;
 };
 
 const LOGIN_USERNAME = "mail@mehrdadnaderi.com";
@@ -74,6 +92,8 @@ const LOGIN_PASSWORD = "Naderi$2050";
 const MEDICATIONS_STORAGE_KEY = "medtrack-medications";
 const LOGS_STORAGE_KEY = "medtrack-intake-logs";
 const AUTH_STORAGE_KEY = "medtrack-authenticated";
+const CATEGORIES_STORAGE_KEY = "medtrack-categories";
+const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
   { id: "sunday", label: "Sunday", short: "Sun" },
@@ -96,48 +116,131 @@ const TABS: {
   { id: "medications", label: "My Medications", icon: ClipboardList },
   { id: "add", label: "Add Medication", icon: Plus },
   { id: "history", label: "History", icon: History },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
-const CATEGORY_META: Record<
-  MedicationCategory,
+const CATEGORY_TONE_CLASSES: Record<
+  CategoryTone,
   {
-    label: string;
-    className: string;
+    badgeClassName: string;
     iconClassName: string;
     dotClassName: string;
+    swatchClassName: string;
   }
 > = {
-  skin: {
-    label: "Skin",
-    className: "border-rose-200 bg-rose-50 text-rose-700",
+  rose: {
+    badgeClassName: "border-rose-200 bg-rose-50 text-rose-700",
     iconClassName: "bg-rose-100 text-rose-700",
     dotClassName: "bg-rose-500",
+    swatchClassName: "bg-rose-500",
   },
-  hair: {
-    label: "Hair",
-    className: "border-amber-200 bg-amber-50 text-amber-800",
+  amber: {
+    badgeClassName: "border-amber-200 bg-amber-50 text-amber-800",
     iconClassName: "bg-amber-100 text-amber-800",
     dotClassName: "bg-amber-500",
+    swatchClassName: "bg-amber-500",
   },
-  "blood-pressure": {
-    label: "Blood pressure",
-    className: "border-sky-200 bg-sky-50 text-sky-800",
+  sky: {
+    badgeClassName: "border-sky-200 bg-sky-50 text-sky-800",
     iconClassName: "bg-sky-100 text-sky-800",
     dotClassName: "bg-sky-500",
+    swatchClassName: "bg-sky-500",
   },
-  liver: {
-    label: "Liver",
-    className: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  emerald: {
+    badgeClassName: "border-emerald-200 bg-emerald-50 text-emerald-800",
     iconClassName: "bg-emerald-100 text-emerald-800",
     dotClassName: "bg-emerald-500",
+    swatchClassName: "bg-emerald-500",
   },
-  other: {
-    label: "Other",
-    className: "border-zinc-200 bg-zinc-50 text-zinc-700",
+  violet: {
+    badgeClassName: "border-violet-200 bg-violet-50 text-violet-800",
+    iconClassName: "bg-violet-100 text-violet-800",
+    dotClassName: "bg-violet-500",
+    swatchClassName: "bg-violet-500",
+  },
+  zinc: {
+    badgeClassName: "border-zinc-200 bg-zinc-50 text-zinc-700",
     iconClassName: "bg-zinc-100 text-zinc-700",
     dotClassName: "bg-zinc-400",
+    swatchClassName: "bg-zinc-500",
   },
 };
+
+const DEFAULT_MEDICATION_CATEGORIES: MedicationCategoryOption[] = [
+  {
+    id: "skin",
+    name: "Skin",
+    tone: "rose",
+  },
+  {
+    id: "hair",
+    name: "Hair",
+    tone: "amber",
+  },
+  {
+    id: "blood-pressure",
+    name: "Blood pressure",
+    tone: "sky",
+  },
+  {
+    id: "liver",
+    name: "Liver",
+    tone: "emerald",
+  },
+  {
+    id: "other",
+    name: "Other",
+    tone: "zinc",
+  },
+];
+
+const DEFAULT_ROUTINE_CATEGORIES: RoutineCategory[] = [
+  {
+    id: "after-waking",
+    name: "After waking",
+    tone: "emerald",
+    sortOrder: 1,
+  },
+  {
+    id: "breakfast",
+    name: "Morning with breakfast",
+    tone: "amber",
+    sortOrder: 2,
+  },
+  {
+    id: "morning",
+    name: "Morning",
+    tone: "sky",
+    sortOrder: 3,
+  },
+  {
+    id: "lunch",
+    name: "Noon with lunch",
+    tone: "rose",
+    sortOrder: 4,
+  },
+  {
+    id: "dinner",
+    name: "Evening with dinner",
+    tone: "violet",
+    sortOrder: 5,
+  },
+  {
+    id: "before-bed",
+    name: "Before bed",
+    tone: "zinc",
+    sortOrder: 6,
+  },
+  {
+    id: "anytime",
+    name: "Anytime",
+    tone: "zinc",
+    sortOrder: 7,
+  },
+];
+
+const DEFAULT_CATEGORY_ID = "other";
+const DEFAULT_ROUTINE_CATEGORY_ID = "anytime";
 
 const UNITS = [
   "mg",
@@ -156,15 +259,32 @@ function createEmptyForm(): MedicationFormState {
     name: "",
     dosage: "",
     unit: "mg",
-    category: "other",
+    category: DEFAULT_CATEGORY_ID,
     scheduleType: "ordered",
     times: ["08:00"],
     timeInput: "08:00",
     order: 1,
-    groupName: "",
+    routineCategoryId: DEFAULT_ROUTINE_CATEGORY_ID,
     days: ALL_DAYS,
     daily: true,
     notes: "",
+  };
+}
+
+function createEmptyCategoryForm(): CategoryFormState {
+  return {
+    id: null,
+    name: "",
+    tone: "emerald",
+  };
+}
+
+function createEmptyRoutineCategoryForm(): RoutineCategoryFormState {
+  return {
+    id: null,
+    name: "",
+    tone: "emerald",
+    sortOrder: 1,
   };
 }
 
@@ -181,9 +301,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isMedicationCategory(value: unknown): value is MedicationCategory {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isCategoryTone(value: unknown): value is CategoryTone {
   return (
     typeof value === "string" &&
-    Object.prototype.hasOwnProperty.call(CATEGORY_META, value)
+    Object.prototype.hasOwnProperty.call(CATEGORY_TONE_CLASSES, value)
   );
 }
 
@@ -224,6 +348,68 @@ function normalizeOrder(value: unknown) {
   return Math.max(1, Math.round(numericValue));
 }
 
+function normalizeMedicationCategoryOption(
+  value: unknown,
+): MedicationCategoryOption | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = normalizeString(value.id).trim();
+  const name = normalizeString(value.name).trim();
+
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    tone: isCategoryTone(value.tone) ? value.tone : "zinc",
+  };
+}
+
+function normalizeRoutineCategory(value: unknown): RoutineCategory | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = normalizeString(value.id).trim();
+  const name = normalizeString(value.name).trim();
+
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    tone: isCategoryTone(value.tone) ? value.tone : "zinc",
+    sortOrder: normalizeOrder(value.sortOrder),
+  };
+}
+
+function ensureUniqueById<T extends { id: string }>(items: T[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) {
+      return false;
+    }
+
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function getStoredOrDefault<T extends { id: string }>(
+  key: string,
+  normalizeItem: (value: unknown) => T | null,
+  defaults: T[],
+) {
+  const storedItems = readStoredArray<T>(key, normalizeItem);
+  return storedItems.length > 0 ? ensureUniqueById(storedItems) : defaults;
+}
+
 function normalizeMedication(value: unknown): Medication | null {
   if (!isRecord(value)) {
     return null;
@@ -245,13 +431,19 @@ function normalizeMedication(value: unknown): Medication | null {
       ? "timed"
       : "ordered";
   const groupName = normalizeString(schedule.groupName).trim();
+  const routineCategoryId = normalizeString(
+    schedule.routineCategoryId,
+    DEFAULT_ROUTINE_CATEGORY_ID,
+  ).trim();
 
   return {
     id: normalizeString(value.id, createId()),
     name: normalizeString(value.name, "Unnamed medication"),
     dosage: normalizeString(value.dosage),
     unit: normalizeString(value.unit, "mg"),
-    category: isMedicationCategory(value.category) ? value.category : "other",
+    category: isMedicationCategory(value.category)
+      ? value.category.trim()
+      : DEFAULT_CATEGORY_ID,
     schedule: {
       type: scheduleType,
       times:
@@ -260,6 +452,10 @@ function normalizeMedication(value: unknown): Medication | null {
           : [],
       days: days.length > 0 ? days : ALL_DAYS,
       order: scheduleType === "ordered" ? normalizeOrder(schedule.order) : 1,
+      routineCategoryId:
+        scheduleType === "ordered"
+          ? routineCategoryId || DEFAULT_ROUTINE_CATEGORY_ID
+          : undefined,
       groupName:
         scheduleType === "ordered" && groupName.length > 0
           ? groupName
@@ -283,6 +479,10 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
       ? "timed"
       : "ordered";
   const groupName = normalizeString(value.groupName).trim();
+  const routineCategoryId = normalizeString(
+    value.routineCategoryId,
+    DEFAULT_ROUTINE_CATEGORY_ID,
+  ).trim();
 
   return {
     id: normalizeString(value.id, createId()),
@@ -290,10 +490,20 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
     medicationName: normalizeString(value.medicationName, "Medication"),
     dosage: normalizeString(value.dosage),
     unit: normalizeString(value.unit, "mg"),
-    category: isMedicationCategory(value.category) ? value.category : "other",
+    category: isMedicationCategory(value.category)
+      ? value.category.trim()
+      : DEFAULT_CATEGORY_ID,
     scheduleType,
     scheduledTime: scheduleType === "timed" ? scheduledTime ?? "08:00" : null,
     order: scheduleType === "ordered" ? normalizeOrder(value.order) : undefined,
+    routineCategoryId:
+      scheduleType === "ordered"
+        ? routineCategoryId || DEFAULT_ROUTINE_CATEGORY_ID
+        : undefined,
+    routineCategoryName:
+      scheduleType === "ordered"
+        ? normalizeString(value.routineCategoryName).trim() || undefined
+        : undefined,
     groupName:
       scheduleType === "ordered" && groupName.length > 0
         ? groupName
@@ -411,6 +621,33 @@ function getMedicationDaysLabel(days: WeekDay[]) {
     .join(", ");
 }
 
+function getMedicationCategoryOption(
+  categories: MedicationCategoryOption[],
+  categoryId: string,
+) {
+  return (
+    categories.find((category) => category.id === categoryId) ??
+    DEFAULT_MEDICATION_CATEGORIES.find((category) => category.id === categoryId) ?? {
+      id: categoryId,
+      name: "Deleted category",
+      tone: "zinc" as const,
+    }
+  );
+}
+
+function getRoutineCategoryOption(
+  routineCategories: RoutineCategory[],
+  routineCategoryId: string | null | undefined,
+) {
+  const id = routineCategoryId || DEFAULT_ROUTINE_CATEGORY_ID;
+
+  return (
+    routineCategories.find((category) => category.id === id) ??
+    DEFAULT_ROUTINE_CATEGORIES.find((category) => category.id === id) ??
+    DEFAULT_ROUTINE_CATEGORIES[DEFAULT_ROUTINE_CATEGORIES.length - 1]
+  );
+}
+
 function getMedicationScheduleType(medication: Medication) {
   if (medication.schedule.type) {
     return medication.schedule.type;
@@ -423,8 +660,8 @@ function getMedicationOrder(medication: Medication) {
   return normalizeOrder(medication.schedule.order);
 }
 
-function getMedicationGroupName(medication: Medication) {
-  return medication.schedule.groupName?.trim() ?? "";
+function getMedicationRoutineCategoryId(medication: Medication) {
+  return medication.schedule.routineCategoryId ?? DEFAULT_ROUTINE_CATEGORY_ID;
 }
 
 function getTodayMedicationKey(entry: TodayMedication) {
@@ -456,16 +693,25 @@ function isTodayMedicationTaken(
   });
 }
 
-function getEntryScheduleLabel(entry: TodayMedication) {
+function getEntryScheduleLabel(
+  entry: TodayMedication,
+  routineCategories: RoutineCategory[],
+) {
   if (entry.scheduleType === "timed" && entry.time) {
     return `at ${formatReadableTime(entry.time)}`;
   }
 
-  const groupName = entry.groupName ? ` · ${entry.groupName}` : "";
-  return `step ${entry.order ?? 1}${groupName}`;
+  const routineCategory = getRoutineCategoryOption(
+    routineCategories,
+    entry.routineCategoryId,
+  );
+  return `step ${entry.order ?? 1} - ${routineCategory.name}`;
 }
 
-function getMedicationScheduleLabel(medication: Medication) {
+function getMedicationScheduleLabel(
+  medication: Medication,
+  routineCategories: RoutineCategory[],
+) {
   const scheduleType = getMedicationScheduleType(medication);
 
   if (scheduleType === "timed") {
@@ -474,11 +720,14 @@ function getMedicationScheduleLabel(medication: Medication) {
       .join(", ");
   }
 
-  const groupName = getMedicationGroupName(medication);
-  return `Step ${getMedicationOrder(medication)}${groupName ? ` · ${groupName}` : ""}`;
+  const routineCategory = getRoutineCategoryOption(
+    routineCategories,
+    getMedicationRoutineCategoryId(medication),
+  );
+  return `Step ${getMedicationOrder(medication)} - ${routineCategory.name}`;
 }
 
-function getLogScheduleLabel(log: IntakeLog) {
+function getLogScheduleLabel(log: IntakeLog, routineCategories: RoutineCategory[]) {
   const scheduleType =
     log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
 
@@ -486,7 +735,10 @@ function getLogScheduleLabel(log: IntakeLog) {
     return `scheduled for ${formatReadableTime(log.scheduledTime)}`;
   }
 
-  return `order step ${log.order ?? 1}${log.groupName ? ` · ${log.groupName}` : ""}`;
+  const routineCategory = log.routineCategoryName
+    ? { name: log.routineCategoryName }
+    : getRoutineCategoryOption(routineCategories, log.routineCategoryId);
+  return `order step ${log.order ?? 1} - ${routineCategory.name}`;
 }
 
 export default function MedTrackApp() {
@@ -496,9 +748,20 @@ export default function MedTrackApp() {
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [medications, setMedications] = useState<Medication[]>([]);
   const [logs, setLogs] = useState<IntakeLog[]>([]);
+  const [categories, setCategories] = useState<MedicationCategoryOption[]>(
+    DEFAULT_MEDICATION_CATEGORIES,
+  );
+  const [routineCategories, setRoutineCategories] = useState<RoutineCategory[]>(
+    DEFAULT_ROUTINE_CATEGORIES,
+  );
   const [form, setForm] = useState<MedicationFormState>(() =>
     createEmptyForm(),
   );
+  const [categoryForm, setCategoryForm] = useState<CategoryFormState>(() =>
+    createEmptyCategoryForm(),
+  );
+  const [routineCategoryForm, setRoutineCategoryForm] =
+    useState<RoutineCategoryFormState>(() => createEmptyRoutineCategoryForm());
   const [today, setToday] = useState<Date | null>(null);
   const [isStorageReady, setIsStorageReady] = useState(false);
 
@@ -520,6 +783,20 @@ export default function MedTrackApp() {
         ),
       );
       setLogs(readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog));
+      setCategories(
+        getStoredOrDefault<MedicationCategoryOption>(
+          CATEGORIES_STORAGE_KEY,
+          normalizeMedicationCategoryOption,
+          DEFAULT_MEDICATION_CATEGORIES,
+        ),
+      );
+      setRoutineCategories(
+        getStoredOrDefault<RoutineCategory>(
+          ROUTINE_CATEGORIES_STORAGE_KEY,
+          normalizeRoutineCategory,
+          DEFAULT_ROUTINE_CATEGORIES,
+        ).sort((first, second) => first.sortOrder - second.sortOrder),
+      );
       setToday(new Date());
       setIsStorageReady(true);
     }, 0);
@@ -547,6 +824,22 @@ export default function MedTrackApp() {
   }, [isStorageReady, logs]);
 
   useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
+    writeStoredArray(CATEGORIES_STORAGE_KEY, categories);
+  }, [categories, isStorageReady]);
+
+  useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
+    writeStoredArray(ROUTINE_CATEGORIES_STORAGE_KEY, routineCategories);
+  }, [isStorageReady, routineCategories]);
+
+  useEffect(() => {
     const intervalId = window.setInterval(
       () => setToday(new Date()),
       60 * 1000,
@@ -554,6 +847,40 @@ export default function MedTrackApp() {
 
     return () => window.clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    if (categories.length === 0) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setForm((currentForm) =>
+        categories.some((category) => category.id === currentForm.category)
+          ? currentForm
+          : { ...currentForm, category: categories[0].id },
+      );
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [categories]);
+
+  useEffect(() => {
+    if (routineCategories.length === 0) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setForm((currentForm) =>
+        routineCategories.some(
+          (category) => category.id === currentForm.routineCategoryId,
+        )
+          ? currentForm
+          : { ...currentForm, routineCategoryId: routineCategories[0].id },
+      );
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [routineCategories]);
 
   const activeMedications = useMemo(
     () => medications.filter((medication) => medication.isActive),
@@ -581,7 +908,7 @@ export default function MedTrackApp() {
               scheduleType,
               time,
               order: null,
-              groupName: "",
+              routineCategoryId: null,
               isTaken: isTodayMedicationTaken(
                 logs,
                 medication,
@@ -599,7 +926,7 @@ export default function MedTrackApp() {
           scheduleType,
           time: null,
           order: getMedicationOrder(medication),
-          groupName: getMedicationGroupName(medication),
+          routineCategoryId: getMedicationRoutineCategoryId(medication),
           isTaken: isTodayMedicationTaken(
             logs,
             medication,
@@ -641,34 +968,56 @@ export default function MedTrackApp() {
   ).length;
 
   const orderedMedicationGroups = useMemo<OrderedMedicationGroup[]>(() => {
-    const groups = new Map<number, TodayMedication[]>();
+    const groups = new Map<string, TodayMedication[]>();
 
     todayMedications
       .filter((entry) => entry.scheduleType === "ordered")
       .forEach((entry) => {
         const order = entry.order ?? 1;
-        groups.set(order, [...(groups.get(order) ?? []), entry]);
+        const routineCategoryId =
+          entry.routineCategoryId ?? DEFAULT_ROUTINE_CATEGORY_ID;
+        const key = `${routineCategoryId}:${order}`;
+        groups.set(key, [...(groups.get(key) ?? []), entry]);
       });
 
     return Array.from(groups.entries())
-      .sort(([firstOrder], [secondOrder]) => firstOrder - secondOrder)
-      .map(([order, entries]) => {
+      .map(([key, entries]) => {
+        const [routineCategoryId, rawOrder] = key.split(":");
+        const order = normalizeOrder(rawOrder);
+        const routineCategory = getRoutineCategoryOption(
+          routineCategories,
+          routineCategoryId,
+        );
         const sortedEntries = [...entries].sort((first, second) =>
           first.medication.name.localeCompare(second.medication.name),
         );
-        const firstGroupName =
-          sortedEntries.find((entry) => entry.groupName)?.groupName ?? "";
         const takenCount = sortedEntries.filter((entry) => entry.isTaken).length;
 
         return {
+          routineCategoryId: routineCategory.id,
+          routineCategoryName: routineCategory.name,
           order,
-          groupName: firstGroupName,
           entries: sortedEntries,
           takenCount,
           isTaken: takenCount === sortedEntries.length,
         };
+      })
+      .sort((first, second) => {
+        const firstRoutine = getRoutineCategoryOption(
+          routineCategories,
+          first.routineCategoryId,
+        );
+        const secondRoutine = getRoutineCategoryOption(
+          routineCategories,
+          second.routineCategoryId,
+        );
+
+        return (
+          firstRoutine.sortOrder - secondRoutine.sortOrder ||
+          first.order - second.order
+        );
       });
-  }, [todayMedications]);
+  }, [routineCategories, todayMedications]);
 
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -744,6 +1093,224 @@ export default function MedTrackApp() {
     });
   }
 
+  function resetCategoryForm() {
+    setCategoryForm(createEmptyCategoryForm());
+  }
+
+  function resetRoutineCategoryForm() {
+    setRoutineCategoryForm(createEmptyRoutineCategoryForm());
+  }
+
+  function handleCategorySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = categoryForm.name.trim();
+
+    if (!name) {
+      toast.error("Category name is required");
+      return;
+    }
+
+    const category: MedicationCategoryOption = {
+      id: categoryForm.id ?? createId(),
+      name,
+      tone: categoryForm.tone,
+    };
+
+    setCategories((currentCategories) => {
+      if (categoryForm.id) {
+        return currentCategories.map((currentCategory) =>
+          currentCategory.id === categoryForm.id ? category : currentCategory,
+        );
+      }
+
+      return [...currentCategories, category];
+    });
+
+    toast.success(categoryForm.id ? "Category updated" : "Category added");
+    resetCategoryForm();
+  }
+
+  function handleEditCategory(category: MedicationCategoryOption) {
+    setCategoryForm({
+      id: category.id,
+      name: category.name,
+      tone: category.tone,
+    });
+  }
+
+  function handleDeleteCategory(category: MedicationCategoryOption) {
+    if (categories.length <= 1) {
+      toast.error("Keep at least one medication category");
+      return;
+    }
+
+    const fallbackCategory = categories.find(
+      (currentCategory) => currentCategory.id !== category.id,
+    );
+
+    if (!fallbackCategory) {
+      toast.error("Add another category before deleting this one");
+      return;
+    }
+
+    const shouldDelete = window.confirm(
+      `Delete ${category.name}? Medications in this category will move to ${fallbackCategory.name}.`,
+    );
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setCategories((currentCategories) =>
+      currentCategories.filter(
+        (currentCategory) => currentCategory.id !== category.id,
+      ),
+    );
+    setMedications((currentMedications) =>
+      currentMedications.map((medication) =>
+        medication.category === category.id
+          ? { ...medication, category: fallbackCategory.id }
+          : medication,
+      ),
+    );
+    setLogs((currentLogs) =>
+      currentLogs.map((log) =>
+        log.category === category.id
+          ? { ...log, category: fallbackCategory.id }
+          : log,
+      ),
+    );
+
+    if (form.category === category.id) {
+      setForm((currentForm) => ({
+        ...currentForm,
+        category: fallbackCategory.id,
+      }));
+    }
+
+    if (categoryForm.id === category.id) {
+      resetCategoryForm();
+    }
+
+    toast.success("Category deleted");
+  }
+
+  function handleRoutineCategorySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = routineCategoryForm.name.trim();
+
+    if (!name) {
+      toast.error("Routine category name is required");
+      return;
+    }
+
+    const routineCategory: RoutineCategory = {
+      id: routineCategoryForm.id ?? createId(),
+      name,
+      tone: routineCategoryForm.tone,
+      sortOrder: normalizeOrder(routineCategoryForm.sortOrder),
+    };
+
+    setRoutineCategories((currentCategories) => {
+      const nextCategories = routineCategoryForm.id
+        ? currentCategories.map((currentCategory) =>
+            currentCategory.id === routineCategoryForm.id
+              ? routineCategory
+              : currentCategory,
+          )
+        : [...currentCategories, routineCategory];
+
+      return [...nextCategories].sort(
+        (first, second) => first.sortOrder - second.sortOrder,
+      );
+    });
+
+    toast.success(
+      routineCategoryForm.id
+        ? "Routine category updated"
+        : "Routine category added",
+    );
+    resetRoutineCategoryForm();
+  }
+
+  function handleEditRoutineCategory(category: RoutineCategory) {
+    setRoutineCategoryForm({
+      id: category.id,
+      name: category.name,
+      tone: category.tone,
+      sortOrder: category.sortOrder,
+    });
+  }
+
+  function handleDeleteRoutineCategory(category: RoutineCategory) {
+    if (routineCategories.length <= 1) {
+      toast.error("Keep at least one routine category");
+      return;
+    }
+
+    const fallbackCategory = routineCategories.find(
+      (currentCategory) => currentCategory.id !== category.id,
+    );
+
+    if (!fallbackCategory) {
+      toast.error("Add another routine category before deleting this one");
+      return;
+    }
+
+    const shouldDelete = window.confirm(
+      `Delete ${category.name}? Related routine medications will move to ${fallbackCategory.name}.`,
+    );
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setRoutineCategories((currentCategories) =>
+      currentCategories.filter(
+        (currentCategory) => currentCategory.id !== category.id,
+      ),
+    );
+    setMedications((currentMedications) =>
+      currentMedications.map((medication) =>
+        medication.schedule.routineCategoryId === category.id
+          ? {
+              ...medication,
+              schedule: {
+                ...medication.schedule,
+                routineCategoryId: fallbackCategory.id,
+              },
+            }
+          : medication,
+      ),
+    );
+    setLogs((currentLogs) =>
+      currentLogs.map((log) =>
+        log.routineCategoryId === category.id
+          ? {
+              ...log,
+              routineCategoryId: fallbackCategory.id,
+              routineCategoryName: fallbackCategory.name,
+            }
+          : log,
+      ),
+    );
+
+    if (form.routineCategoryId === category.id) {
+      setForm((currentForm) => ({
+        ...currentForm,
+        routineCategoryId: fallbackCategory.id,
+      }));
+    }
+
+    if (routineCategoryForm.id === category.id) {
+      resetRoutineCategoryForm();
+    }
+
+    toast.success("Routine category deleted");
+  }
+
   function handleMedicationSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -752,7 +1319,8 @@ export default function MedTrackApp() {
     const unit = form.unit.trim();
     const times = Array.from(new Set(form.times)).sort();
     const order = normalizeOrder(form.order);
-    const groupName = form.groupName.trim();
+    const routineCategoryId =
+      form.routineCategoryId || DEFAULT_ROUTINE_CATEGORY_ID;
     const selectedDays = form.daily
       ? ALL_DAYS
       : WEEK_DAYS.map((day) => day.id).filter((day) =>
@@ -785,10 +1353,8 @@ export default function MedTrackApp() {
         times: form.scheduleType === "timed" ? times : [],
         days: selectedDays,
         order: form.scheduleType === "ordered" ? order : undefined,
-        groupName:
-          form.scheduleType === "ordered" && groupName.length > 0
-            ? groupName
-            : undefined,
+        routineCategoryId:
+          form.scheduleType === "ordered" ? routineCategoryId : undefined,
       },
       notes: form.notes.trim(),
       isActive: true,
@@ -820,7 +1386,7 @@ export default function MedTrackApp() {
       times: [...medication.schedule.times].sort(),
       timeInput: medication.schedule.times[0] ?? "08:00",
       order: getMedicationOrder(medication),
-      groupName: getMedicationGroupName(medication),
+      routineCategoryId: getMedicationRoutineCategoryId(medication),
       days: [...medication.schedule.days],
       daily: medication.schedule.days.length === WEEK_DAYS.length,
       notes: medication.notes,
@@ -858,6 +1424,11 @@ export default function MedTrackApp() {
       return;
     }
 
+    const routineCategory =
+      entry.scheduleType === "ordered"
+        ? getRoutineCategoryOption(routineCategories, entry.routineCategoryId)
+        : null;
+
     const log: IntakeLog = {
       id: createId(),
       medicationId: entry.medication.id,
@@ -868,10 +1439,12 @@ export default function MedTrackApp() {
       scheduleType: entry.scheduleType,
       scheduledTime: entry.scheduleType === "timed" ? entry.time : null,
       order: entry.scheduleType === "ordered" ? entry.order ?? 1 : undefined,
-      groupName:
-        entry.scheduleType === "ordered" && entry.groupName
-          ? entry.groupName
+      routineCategoryId:
+        entry.scheduleType === "ordered"
+          ? routineCategory?.id ?? DEFAULT_ROUTINE_CATEGORY_ID
           : undefined,
+      routineCategoryName:
+        entry.scheduleType === "ordered" ? routineCategory?.name : undefined,
       takenAt: new Date().toISOString(),
       date: todayKey,
       status: "taken",
@@ -906,7 +1479,11 @@ export default function MedTrackApp() {
       scheduleType: entry.scheduleType,
       scheduledTime: null,
       order: entry.order ?? 1,
-      groupName: entry.groupName || undefined,
+      routineCategoryId: entry.routineCategoryId ?? DEFAULT_ROUTINE_CATEGORY_ID,
+      routineCategoryName: getRoutineCategoryOption(
+        routineCategories,
+        entry.routineCategoryId,
+      ).name,
       takenAt,
       date: todayKey,
       status: "taken",
@@ -1042,6 +1619,8 @@ export default function MedTrackApp() {
               orderedMedicationGroups={orderedMedicationGroups}
               takenTodayCount={takenTodayCount}
               logCount={logs.length}
+              categories={categories}
+              routineCategories={routineCategories}
               onMarkAsTaken={handleMarkAsTaken}
               onMarkGroupAsTaken={handleMarkGroupAsTaken}
               onAddMedication={() => setActiveTab("add")}
@@ -1051,6 +1630,8 @@ export default function MedTrackApp() {
           {activeTab === "medications" && (
             <MedicationListView
               medications={activeMedications}
+              categories={categories}
+              routineCategories={routineCategories}
               onEdit={handleEditMedication}
               onDelete={handleDeleteMedication}
               onAddMedication={() => setActiveTab("add")}
@@ -1061,6 +1642,8 @@ export default function MedTrackApp() {
             <MedicationFormView
               form={form}
               setForm={setForm}
+              categories={categories}
+              routineCategories={routineCategories}
               onSubmit={handleMedicationSubmit}
               onAddTime={handleAddTime}
               onRemoveTime={handleRemoveTime}
@@ -1073,7 +1656,32 @@ export default function MedTrackApp() {
             />
           )}
 
-          {activeTab === "history" && <HistoryView logs={sortedLogs} />}
+          {activeTab === "history" && (
+            <HistoryView
+              logs={sortedLogs}
+              categories={categories}
+              routineCategories={routineCategories}
+            />
+          )}
+
+          {activeTab === "settings" && (
+            <SettingsView
+              categories={categories}
+              routineCategories={routineCategories}
+              categoryForm={categoryForm}
+              routineCategoryForm={routineCategoryForm}
+              setCategoryForm={setCategoryForm}
+              setRoutineCategoryForm={setRoutineCategoryForm}
+              onCategorySubmit={handleCategorySubmit}
+              onRoutineCategorySubmit={handleRoutineCategorySubmit}
+              onEditCategory={handleEditCategory}
+              onDeleteCategory={handleDeleteCategory}
+              onEditRoutineCategory={handleEditRoutineCategory}
+              onDeleteRoutineCategory={handleDeleteRoutineCategory}
+              onCancelCategoryEdit={resetCategoryForm}
+              onCancelRoutineCategoryEdit={resetRoutineCategoryForm}
+            />
+          )}
         </section>
       </div>
     </main>
@@ -1086,6 +1694,8 @@ function DashboardView({
   orderedMedicationGroups,
   takenTodayCount,
   logCount,
+  categories,
+  routineCategories,
   onMarkAsTaken,
   onMarkGroupAsTaken,
   onAddMedication,
@@ -1095,6 +1705,8 @@ function DashboardView({
   orderedMedicationGroups: OrderedMedicationGroup[];
   takenTodayCount: number;
   logCount: number;
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
   onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
@@ -1181,6 +1793,8 @@ function DashboardView({
                   <MedicationDoseCard
                     key={getTodayMedicationKey(entry)}
                     entry={entry}
+                    categories={categories}
+                    routineCategories={routineCategories}
                     onMarkAsTaken={onMarkAsTaken}
                   />
                 ))}
@@ -1209,11 +1823,9 @@ function DashboardView({
                             </span>
                           )}
                         </div>
-                        {group.groupName && (
-                          <p className="mt-1 text-sm text-zinc-500">
-                            {group.groupName}
-                          </p>
-                        )}
+                        <p className="mt-1 text-sm text-zinc-500">
+                          {group.routineCategoryName}
+                        </p>
                       </div>
                       <button
                         className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
@@ -1235,6 +1847,8 @@ function DashboardView({
                         <MedicationDoseCard
                           key={getTodayMedicationKey(entry)}
                           entry={entry}
+                          categories={categories}
+                          routineCategories={routineCategories}
                           onMarkAsTaken={onMarkAsTaken}
                           compact
                         />
@@ -1253,13 +1867,23 @@ function DashboardView({
 
 function MedicationDoseCard({
   entry,
+  categories,
+  routineCategories,
   onMarkAsTaken,
   compact = false,
 }: {
   entry: TodayMedication;
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
   compact?: boolean;
 }) {
+  const medicationCategory = getMedicationCategoryOption(
+    categories,
+    entry.medication.category,
+  );
+  const toneClasses = CATEGORY_TONE_CLASSES[medicationCategory.tone];
+
   return (
     <div
       className={`flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white ${
@@ -1269,7 +1893,7 @@ function MedicationDoseCard({
       <div className="flex gap-3">
         <div
           className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${
-            CATEGORY_META[entry.medication.category].iconClassName
+            toneClasses.iconClassName
           }`}
         >
           <Pill className="h-5 w-5" aria-hidden="true" />
@@ -1279,11 +1903,14 @@ function MedicationDoseCard({
             <h3 className="font-semibold text-zinc-950">
               {entry.medication.name}
             </h3>
-            <CategoryBadge category={entry.medication.category} />
+            <CategoryBadge
+              categoryId={entry.medication.category}
+              categories={categories}
+            />
           </div>
           <p className="mt-1 text-sm text-zinc-600">
             {entry.medication.dosage} {entry.medication.unit}{" "}
-            {getEntryScheduleLabel(entry)}
+            {getEntryScheduleLabel(entry, routineCategories)}
           </p>
           {entry.medication.notes && (
             <p className="mt-1 text-sm text-zinc-500">
@@ -1312,11 +1939,15 @@ function MedicationDoseCard({
 
 function MedicationListView({
   medications,
+  categories,
+  routineCategories,
   onEdit,
   onDelete,
   onAddMedication,
 }: {
   medications: Medication[];
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
   onEdit: (medication: Medication) => void;
   onDelete: (medication: Medication) => void;
   onAddMedication: () => void;
@@ -1350,16 +1981,23 @@ function MedicationListView({
         </section>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
-          {medications.map((medication) => (
-            <article
-              key={medication.id}
-              className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
-            >
+          {medications.map((medication) => {
+            const category = getMedicationCategoryOption(
+              categories,
+              medication.category,
+            );
+            const toneClasses = CATEGORY_TONE_CLASSES[category.tone];
+
+            return (
+              <article
+                key={medication.id}
+                className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"
+              >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex gap-3">
                   <div
                     className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${
-                      CATEGORY_META[medication.category].iconClassName
+                      toneClasses.iconClassName
                     }`}
                   >
                     <Pill className="h-5 w-5" aria-hidden="true" />
@@ -1369,7 +2007,10 @@ function MedicationListView({
                       <h2 className="font-semibold text-zinc-950">
                         {medication.name}
                       </h2>
-                      <CategoryBadge category={medication.category} />
+                      <CategoryBadge
+                        categoryId={medication.category}
+                        categories={categories}
+                      />
                     </div>
                     <p className="mt-1 text-sm text-zinc-600">
                       {medication.dosage} {medication.unit}
@@ -1403,7 +2044,10 @@ function MedicationListView({
                 <div className="rounded-md bg-zinc-50 p-3">
                   <dt className="font-medium text-zinc-500">Schedule</dt>
                   <dd className="mt-1 text-zinc-800">
-                    {getMedicationScheduleLabel(medication)}
+                    {getMedicationScheduleLabel(
+                      medication,
+                      routineCategories,
+                    )}
                   </dd>
                 </div>
                 <div className="rounded-md bg-zinc-50 p-3">
@@ -1419,8 +2063,9 @@ function MedicationListView({
                   {medication.notes}
                 </p>
               )}
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1430,6 +2075,8 @@ function MedicationListView({
 function MedicationFormView({
   form,
   setForm,
+  categories,
+  routineCategories,
   onSubmit,
   onAddTime,
   onRemoveTime,
@@ -1439,6 +2086,8 @@ function MedicationFormView({
 }: {
   form: MedicationFormState;
   setForm: Dispatch<SetStateAction<MedicationFormState>>;
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onAddTime: () => void;
   onRemoveTime: (time: string) => void;
@@ -1486,13 +2135,13 @@ function MedicationFormView({
               onChange={(event) =>
                 setForm((currentForm) => ({
                   ...currentForm,
-                  category: event.target.value as MedicationCategory,
+                  category: event.target.value,
                 }))
               }
             >
-              {Object.entries(CATEGORY_META).map(([category, meta]) => (
-                <option key={category} value={category}>
-                  {meta.label}
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
                 </option>
               ))}
             </select>
@@ -1626,6 +2275,28 @@ function MedicationFormView({
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="block">
               <span className="mb-2 block text-sm font-medium text-zinc-700">
+                Routine category
+              </span>
+              <select
+                className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                value={form.routineCategoryId}
+                onChange={(event) =>
+                  setForm((currentForm) => ({
+                    ...currentForm,
+                    routineCategoryId: event.target.value,
+                  }))
+                }
+              >
+                {routineCategories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-medium text-zinc-700">
                 Step
               </span>
               <input
@@ -1643,22 +2314,6 @@ function MedicationFormView({
               />
             </label>
 
-            <label className="block">
-              <span className="mb-2 block text-sm font-medium text-zinc-700">
-                Group label
-              </span>
-              <input
-                className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                value={form.groupName}
-                onChange={(event) =>
-                  setForm((currentForm) => ({
-                    ...currentForm,
-                    groupName: event.target.value,
-                  }))
-                }
-                placeholder="Morning routine"
-              />
-            </label>
           </div>
         )}
 
@@ -1740,7 +2395,15 @@ function MedicationFormView({
   );
 }
 
-function HistoryView({ logs }: { logs: IntakeLog[] }) {
+function HistoryView({
+  logs,
+  categories,
+  routineCategories,
+}: {
+  logs: IntakeLog[];
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
+}) {
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title="History" description="Past intake logs" />
@@ -1754,15 +2417,22 @@ function HistoryView({ logs }: { logs: IntakeLog[] }) {
           />
         ) : (
           <div className="space-y-3">
-            {logs.map((log) => (
-              <article
-                key={log.id}
-                className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
+            {logs.map((log) => {
+              const category = getMedicationCategoryOption(
+                categories,
+                log.category,
+              );
+              const toneClasses = CATEGORY_TONE_CLASSES[category.tone];
+
+              return (
+                <article
+                  key={log.id}
+                  className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 sm:flex-row sm:items-center sm:justify-between"
+                >
                 <div className="flex gap-3">
                   <div
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
-                      CATEGORY_META[log.category].iconClassName
+                      toneClasses.iconClassName
                     }`}
                   >
                     <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
@@ -1772,22 +2442,324 @@ function HistoryView({ logs }: { logs: IntakeLog[] }) {
                       <h2 className="font-semibold text-zinc-950">
                         {log.medicationName}
                       </h2>
-                      <CategoryBadge category={log.category} />
+                      <CategoryBadge
+                        categoryId={log.category}
+                        categories={categories}
+                      />
                     </div>
                     <p className="mt-1 text-sm text-zinc-600">
-                      {log.dosage} {log.unit} · {getLogScheduleLabel(log)}
+                      {log.dosage} {log.unit} -{" "}
+                      {getLogScheduleLabel(log, routineCategories)}
                     </p>
                   </div>
                 </div>
                 <time className="text-sm font-medium text-zinc-500">
                   {formatLogDate(log.takenAt)}
                 </time>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         )}
       </section>
     </div>
+  );
+}
+
+function SettingsView({
+  categories,
+  routineCategories,
+  categoryForm,
+  routineCategoryForm,
+  setCategoryForm,
+  setRoutineCategoryForm,
+  onCategorySubmit,
+  onRoutineCategorySubmit,
+  onEditCategory,
+  onDeleteCategory,
+  onEditRoutineCategory,
+  onDeleteRoutineCategory,
+  onCancelCategoryEdit,
+  onCancelRoutineCategoryEdit,
+}: {
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
+  categoryForm: CategoryFormState;
+  routineCategoryForm: RoutineCategoryFormState;
+  setCategoryForm: Dispatch<SetStateAction<CategoryFormState>>;
+  setRoutineCategoryForm: Dispatch<SetStateAction<RoutineCategoryFormState>>;
+  onCategorySubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onRoutineCategorySubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onEditCategory: (category: MedicationCategoryOption) => void;
+  onDeleteCategory: (category: MedicationCategoryOption) => void;
+  onEditRoutineCategory: (category: RoutineCategory) => void;
+  onDeleteRoutineCategory: (category: RoutineCategory) => void;
+  onCancelCategoryEdit: () => void;
+  onCancelRoutineCategoryEdit: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-6xl">
+      <PageHeader title="Settings" description="Categories and routine timing" />
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+          <h2 className="text-lg font-semibold text-zinc-950">
+            Medication Categories
+          </h2>
+
+          <form className="mt-4 space-y-4" onSubmit={onCategorySubmit}>
+            <label className="block">
+              <span className="mb-2 block text-sm font-medium text-zinc-700">
+                Name
+              </span>
+              <input
+                className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                value={categoryForm.name}
+                onChange={(event) =>
+                  setCategoryForm((currentForm) => ({
+                    ...currentForm,
+                    name: event.target.value,
+                  }))
+                }
+                placeholder="Category name"
+                required
+              />
+            </label>
+
+            <TonePicker
+              value={categoryForm.tone}
+              onChange={(tone) =>
+                setCategoryForm((currentForm) => ({
+                  ...currentForm,
+                  tone,
+                }))
+              }
+            />
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              {categoryForm.id && (
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+                  type="button"
+                  onClick={onCancelCategoryEdit}
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                  Cancel
+                </button>
+              )}
+              <button
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                type="submit"
+              >
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {categoryForm.id ? "Save category" : "Add category"}
+              </button>
+            </div>
+          </form>
+
+          <div className="mt-5 space-y-2">
+            {categories.map((category) => (
+              <div
+                key={category.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 p-3"
+              >
+                <CategoryBadge categoryId={category.id} categories={categories} />
+                <div className="flex gap-2">
+                  <button
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
+                    type="button"
+                    onClick={() => onEditCategory(category)}
+                    title="Edit category"
+                    aria-label={`Edit ${category.name}`}
+                  >
+                    <Edit3 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    type="button"
+                    onClick={() => onDeleteCategory(category)}
+                    title="Delete category"
+                    aria-label={`Delete ${category.name}`}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+          <h2 className="text-lg font-semibold text-zinc-950">
+            Routine Timing Categories
+          </h2>
+
+          <form className="mt-4 space-y-4" onSubmit={onRoutineCategorySubmit}>
+            <div className="grid gap-4 sm:grid-cols-[1fr_7rem]">
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-zinc-700">
+                  Name
+                </span>
+                <input
+                  className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  value={routineCategoryForm.name}
+                  onChange={(event) =>
+                    setRoutineCategoryForm((currentForm) => ({
+                      ...currentForm,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="Before bed"
+                  required
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-zinc-700">
+                  Order
+                </span>
+                <input
+                  className="w-full rounded-md border border-zinc-200 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  min={1}
+                  step={1}
+                  type="number"
+                  value={routineCategoryForm.sortOrder}
+                  onChange={(event) =>
+                    setRoutineCategoryForm((currentForm) => ({
+                      ...currentForm,
+                      sortOrder: normalizeOrder(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+            </div>
+
+            <TonePicker
+              value={routineCategoryForm.tone}
+              onChange={(tone) =>
+                setRoutineCategoryForm((currentForm) => ({
+                  ...currentForm,
+                  tone,
+                }))
+              }
+            />
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              {routineCategoryForm.id && (
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+                  type="button"
+                  onClick={onCancelRoutineCategoryEdit}
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                  Cancel
+                </button>
+              )}
+              <button
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                type="submit"
+              >
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {routineCategoryForm.id
+                  ? "Save routine category"
+                  : "Add routine category"}
+              </button>
+            </div>
+          </form>
+
+          <div className="mt-5 space-y-2">
+            {routineCategories.map((category) => (
+              <div
+                key={category.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 p-3"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <RoutineCategoryBadge category={category} />
+                  <span className="text-xs font-semibold text-zinc-500">
+                    #{category.sortOrder}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
+                    type="button"
+                    onClick={() => onEditRoutineCategory(category)}
+                    title="Edit routine category"
+                    aria-label={`Edit ${category.name}`}
+                  >
+                    <Edit3 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    type="button"
+                    onClick={() => onDeleteRoutineCategory(category)}
+                    title="Delete routine category"
+                    aria-label={`Delete ${category.name}`}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function TonePicker({
+  value,
+  onChange,
+}: {
+  value: CategoryTone;
+  onChange: (tone: CategoryTone) => void;
+}) {
+  const tones = Object.keys(CATEGORY_TONE_CLASSES) as CategoryTone[];
+
+  return (
+    <fieldset>
+      <legend className="mb-2 block text-sm font-medium text-zinc-700">
+        Color
+      </legend>
+      <div className="flex flex-wrap gap-2">
+        {tones.map((tone) => {
+          const isSelected = value === tone;
+
+          return (
+            <button
+              key={tone}
+              className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
+                isSelected
+                  ? "border-emerald-600 bg-emerald-50"
+                  : "border-zinc-200 hover:border-emerald-200"
+              }`}
+              type="button"
+              onClick={() => onChange(tone)}
+              title={tone}
+              aria-label={`Choose ${tone}`}
+            >
+              <span
+                className={`h-4 w-4 rounded-sm ${CATEGORY_TONE_CLASSES[tone].swatchClassName}`}
+              />
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+function RoutineCategoryBadge({ category }: { category: RoutineCategory }) {
+  const toneClasses = CATEGORY_TONE_CLASSES[category.tone];
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${toneClasses.badgeClassName}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-sm ${toneClasses.dotClassName}`} />
+      {category.name}
+    </span>
   );
 }
 
@@ -1850,15 +2822,22 @@ function StatTile({
   );
 }
 
-function CategoryBadge({ category }: { category: MedicationCategory }) {
-  const meta = CATEGORY_META[category];
+function CategoryBadge({
+  categoryId,
+  categories,
+}: {
+  categoryId: MedicationCategory;
+  categories: MedicationCategoryOption[];
+}) {
+  const category = getMedicationCategoryOption(categories, categoryId);
+  const toneClasses = CATEGORY_TONE_CLASSES[category.tone];
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${meta.className}`}
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${toneClasses.badgeClassName}`}
     >
-      <span className={`h-1.5 w-1.5 rounded-sm ${meta.dotClassName}`} />
-      {meta.label}
+      <span className={`h-1.5 w-1.5 rounded-sm ${toneClasses.dotClassName}`} />
+      {category.name}
     </span>
   );
 }
