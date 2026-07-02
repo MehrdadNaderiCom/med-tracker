@@ -16,7 +16,14 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "MedTrack",
+  applicationName: "MedTrack",
   description: "A personal medication tracking app.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "MedTrack",
+    statusBarStyle: "default",
+  },
 };
 
 export default function RootLayout({
