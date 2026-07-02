@@ -25,6 +25,7 @@ import {
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { MedTrackLoading } from "./med-track-loading";
 import type {
   IntakeLog,
   Medication,
@@ -156,7 +157,93 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function readStoredArray<T>(key: string): T[] {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isMedicationCategory(value: unknown): value is MedicationCategory {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(CATEGORY_META, value)
+  );
+}
+
+function isWeekDay(value: unknown): value is WeekDay {
+  return typeof value === "string" && ALL_DAYS.includes(value as WeekDay);
+}
+
+function normalizeString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function normalizeTime(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return /^\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function normalizeMedication(value: unknown): Medication | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const schedule = isRecord(value.schedule) ? value.schedule : {};
+  const times = Array.isArray(schedule.times)
+    ? schedule.times.flatMap((time) => {
+        const normalizedTime = normalizeTime(time);
+        return normalizedTime ? [normalizedTime] : [];
+      })
+    : [];
+  const days = Array.isArray(schedule.days)
+    ? schedule.days.filter(isWeekDay)
+    : [];
+
+  return {
+    id: normalizeString(value.id, createId()),
+    name: normalizeString(value.name, "Unnamed medication"),
+    dosage: normalizeString(value.dosage),
+    unit: normalizeString(value.unit, "mg"),
+    category: isMedicationCategory(value.category) ? value.category : "other",
+    schedule: {
+      times: times.length > 0 ? Array.from(new Set(times)).sort() : ["08:00"],
+      days: days.length > 0 ? days : ALL_DAYS,
+    },
+    notes: normalizeString(value.notes),
+    isActive: typeof value.isActive === "boolean" ? value.isActive : true,
+  };
+}
+
+function normalizeIntakeLog(value: unknown): IntakeLog | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const takenAt = normalizeString(value.takenAt, new Date().toISOString());
+
+  return {
+    id: normalizeString(value.id, createId()),
+    medicationId: normalizeString(value.medicationId),
+    medicationName: normalizeString(value.medicationName, "Medication"),
+    dosage: normalizeString(value.dosage),
+    unit: normalizeString(value.unit, "mg"),
+    category: isMedicationCategory(value.category) ? value.category : "other",
+    scheduledTime: normalizeTime(value.scheduledTime) ?? "08:00",
+    takenAt,
+    date: normalizeString(value.date, takenAt.slice(0, 10)),
+    status: "taken",
+    notes:
+      typeof value.notes === "string" && value.notes.length > 0
+        ? value.notes
+        : undefined,
+  };
+}
+
+function readStoredArray<T>(
+  key: string,
+  normalizeItem: (value: unknown) => T | null,
+): T[] {
   if (typeof window === "undefined") {
     return [];
   }
@@ -168,9 +255,28 @@ function readStoredArray<T>(key: string): T[] {
     }
 
     const parsedValue: unknown = JSON.parse(rawValue);
-    return Array.isArray(parsedValue) ? (parsedValue as T[]) : [];
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue.flatMap((item) => {
+      const normalizedItem = normalizeItem(item);
+      return normalizedItem ? [normalizedItem] : [];
+    });
   } catch {
     return [];
+  }
+}
+
+function writeStoredArray<T>(key: string, value: T[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    toast.error("Unable to save changes in this browser session");
   }
 }
 
@@ -194,8 +300,8 @@ function formatReadableTime(value: string) {
   return format(date, "h:mm a");
 }
 
-function getTodayDay(): WeekDay {
-  return WEEK_DAYS[new Date().getDay()].id;
+function getTodayDay(date: Date): WeekDay {
+  return WEEK_DAYS[date.getDay()].id;
 }
 
 function getMedicationDaysLabel(days: WeekDay[]) {
@@ -213,29 +319,65 @@ export default function MedTrackApp() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
-  const [medications, setMedications] = useState<Medication[]>(() =>
-    readStoredArray<Medication>(MEDICATIONS_STORAGE_KEY),
-  );
-  const [logs, setLogs] = useState<IntakeLog[]>(() =>
-    readStoredArray<IntakeLog>(LOGS_STORAGE_KEY),
-  );
+  const [medications, setMedications] = useState<Medication[]>([]);
+  const [logs, setLogs] = useState<IntakeLog[]>([]);
   const [form, setForm] = useState<MedicationFormState>(() =>
     createEmptyForm(),
   );
+  const [today, setToday] = useState<Date | null>(null);
+  const [isStorageReady, setIsStorageReady] = useState(false);
 
-  const todayKey = format(new Date(), "yyyy-MM-dd");
-  const todayLabel = format(new Date(), "EEEE, MMMM d");
+  const todayKey = today ? format(today, "yyyy-MM-dd") : "";
+  const todayLabel = today ? format(today, "EEEE, MMMM d") : "";
 
   useEffect(() => {
-    window.localStorage.setItem(
-      MEDICATIONS_STORAGE_KEY,
-      JSON.stringify(medications),
+    let isCancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      setMedications(
+        readStoredArray<Medication>(
+          MEDICATIONS_STORAGE_KEY,
+          normalizeMedication,
+        ),
+      );
+      setLogs(readStoredArray<IntakeLog>(LOGS_STORAGE_KEY, normalizeIntakeLog));
+      setToday(new Date());
+      setIsStorageReady(true);
+    }, 0);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
+    writeStoredArray(MEDICATIONS_STORAGE_KEY, medications);
+  }, [isStorageReady, medications]);
+
+  useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
+    writeStoredArray(LOGS_STORAGE_KEY, logs);
+  }, [isStorageReady, logs]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(
+      () => setToday(new Date()),
+      60 * 1000,
     );
-  }, [medications]);
 
-  useEffect(() => {
-    window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(logs));
-  }, [logs]);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const activeMedications = useMemo(
     () => medications.filter((medication) => medication.isActive),
@@ -243,7 +385,11 @@ export default function MedTrackApp() {
   );
 
   const todayMedications = useMemo<TodayMedication[]>(() => {
-    const todayDay = getTodayDay();
+    if (!today) {
+      return [];
+    }
+
+    const todayDay = getTodayDay(today);
 
     return activeMedications
       .filter((medication) => medication.schedule.days.includes(todayDay))
@@ -260,7 +406,7 @@ export default function MedTrackApp() {
         })),
       )
       .sort((first, second) => first.time.localeCompare(second.time));
-  }, [activeMedications, logs, todayKey]);
+  }, [activeMedications, logs, today, todayKey]);
 
   const sortedLogs = useMemo(
     () =>
@@ -431,6 +577,11 @@ export default function MedTrackApp() {
   }
 
   function handleMarkAsTaken(entry: TodayMedication) {
+    if (!todayKey) {
+      toast.error("The schedule is still loading");
+      return;
+    }
+
     if (entry.isTaken) {
       toast.error("This dose is already marked as taken");
       return;
@@ -452,6 +603,10 @@ export default function MedTrackApp() {
 
     setLogs((currentLogs) => [log, ...currentLogs]);
     toast.success(`${entry.medication.name} marked as taken`);
+  }
+
+  if (!isStorageReady || !today) {
+    return <MedTrackLoading />;
   }
 
   if (!isAuthenticated) {
