@@ -110,6 +110,36 @@ type AdherenceStats = {
   streak: number;
 };
 
+type AdherenceDayPoint = {
+  dateKey: string;
+  label: string;
+  shortLabel: string;
+  due: number;
+  taken: number;
+  rate: number;
+};
+
+type AdherenceRangeId =
+  | "1d"
+  | "7d"
+  | "30d"
+  | "90d"
+  | "180d"
+  | "365d";
+
+const ADHERENCE_RANGE_OPTIONS: {
+  id: AdherenceRangeId;
+  label: string;
+  days: number;
+}[] = [
+  { id: "1d", label: "1 day", days: 1 },
+  { id: "7d", label: "1 week", days: 7 },
+  { id: "30d", label: "1 month", days: 30 },
+  { id: "90d", label: "3 months", days: 90 },
+  { id: "180d", label: "6 months", days: 180 },
+  { id: "365d", label: "1 year", days: 365 },
+];
+
 type CloudSyncStatus =
   | "loading"
   | "not-configured"
@@ -140,7 +170,7 @@ const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
 const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
-const PERSONAL_PLAN_VERSION = 4;
+const PERSONAL_PLAN_VERSION = 5;
 const AUTO_ROLLOVER_HOUR = 12;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
@@ -287,6 +317,16 @@ const DEFAULT_MEDICATION_CATEGORIES: MedicationCategoryOption[] = [
     tone: "emerald",
   },
   {
+    id: "exercise",
+    name: "Exercise",
+    tone: "sky",
+  },
+  {
+    id: "lifestyle",
+    name: "Lifestyle",
+    tone: "violet",
+  },
+  {
     id: "other",
     name: "Other",
     tone: "zinc",
@@ -357,6 +397,7 @@ const UNITS = [
   "spray",
   "application",
   "session",
+  "minute",
   "other",
 ];
 
@@ -672,6 +713,42 @@ function createStarterMedicationPlan(): Medication[] {
         "Night dental care. Brush for two minutes with fluoride toothpaste before sleep. This is separated from floss so each habit can be tracked.",
       isActive: true,
     },
+    {
+      id: createId(),
+      name: "Stationary bike - 30 minutes",
+      dosage: "30",
+      unit: "minute",
+      category: "exercise",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 1,
+        routineCategoryId: "during-day",
+      },
+      notes:
+        "Daily cardio for weight loss and grade-3 fatty liver support. Aim for a steady 30-minute stationary bike session during the day (not right after a heavy meal). Start at a comfortable pace you can sustain; consistency matters more than intensity. Stop and seek care if you feel chest pain, severe shortness of breath, or dizziness.",
+      isActive: true,
+    },
+    {
+      id: createId(),
+      name: "No hookah today",
+      dosage: "1",
+      unit: "session",
+      category: "lifestyle",
+      schedule: {
+        type: "ordered",
+        dayMode: "daily",
+        times: [],
+        days: [...ALL_DAYS],
+        order: 2,
+        routineCategoryId: "during-day",
+      },
+      notes:
+        "Important health commitment: stay completely hookah-free for the full care day. Hookah smoke loads the body with toxins and carbon monoxide, worsens fatty-liver recovery, and works against weight-loss and cardiovascular goals. Mark this only when you stayed smoke-free all day.",
+      isActive: true,
+    },
   ];
 }
 
@@ -682,6 +759,7 @@ const PERSONAL_PLAN_NAME_MIGRATIONS: Record<string, string> = {
 function mergePersonalMedicationPlan(
   currentMedications: Medication[],
   shouldUpdateKnownItems: boolean,
+  activeFromDateKey?: string,
 ) {
   const planMedications = createStarterMedicationPlan();
   const planByName = new Map(
@@ -705,6 +783,8 @@ function mergePersonalMedicationPlan(
       ...planMedication,
       id: medication.id,
       isActive: medication.isActive,
+      activeFrom: medication.activeFrom,
+      activeUntil: medication.activeUntil,
     };
   });
   const activeNames = new Set(
@@ -712,9 +792,16 @@ function mergePersonalMedicationPlan(
       .filter((medication) => medication.isActive)
       .map((medication) => normalizeMedicationName(medication.name)),
   );
-  const missingPlanMedications = planMedications.filter(
-    (medication) => !activeNames.has(normalizeMedicationName(medication.name)),
-  );
+  const missingPlanMedications = planMedications
+    .filter(
+      (medication) =>
+        !activeNames.has(normalizeMedicationName(medication.name)),
+    )
+    .map((medication) => ({
+      ...medication,
+      // New plan items must not rewrite older adherence history.
+      activeFrom: activeFromDateKey,
+    }));
 
   return [...nextMedications, ...missingPlanMedications];
 }
@@ -892,8 +979,12 @@ function normalizeSyncData(
       : 0;
   const shouldUpdatePersonalPlan =
     personalPlanVersion < PERSONAL_PLAN_VERSION;
+  const careDayKeyForPlan =
+    typeof value.careDayKey === "string"
+      ? resolveCareDayKey(value.careDayKey, now)
+      : getDefaultCareDayKey(now);
   const medications = shouldUpdatePersonalPlan
-    ? mergePersonalMedicationPlan(rawMedications, true)
+    ? mergePersonalMedicationPlan(rawMedications, true, careDayKeyForPlan)
     : rawMedications;
   const categories = ensureItemsById(
     Array.isArray(value.categories)
@@ -913,10 +1004,7 @@ function normalizeSyncData(
       : fallbackData.routineCategories,
     DEFAULT_ROUTINE_CATEGORIES,
   ).sort((first, second) => first.sortOrder - second.sortOrder);
-  const careDayKey =
-    typeof value.careDayKey === "string"
-      ? resolveCareDayKey(value.careDayKey, now)
-      : fallbackData.careDayKey;
+  const careDayKey = careDayKeyForPlan;
 
   const cloudData: MedTrackSyncData = {
     medications,
@@ -976,9 +1064,15 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
     normalizeIntakeLog,
   ).filter((log) => !storedDeletedLogIdSet.has(log.id));
 
+  const careDayKey = resolveCareDayKey(storedCareDayKey, now);
+
   return {
     medications: shouldLoadStarterPlan
-      ? mergePersonalMedicationPlan(storedMedications, shouldUpdatePersonalPlan)
+      ? mergePersonalMedicationPlan(
+          storedMedications,
+          shouldUpdatePersonalPlan,
+          careDayKey,
+        )
       : storedMedications,
     logs: storedLogs,
     deletedLogIds: storedDeletedLogIds,
@@ -990,7 +1084,7 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
         ? ensureItemsById(storedRoutineCategories, DEFAULT_ROUTINE_CATEGORIES)
         : storedRoutineCategories
     ).sort((first, second) => first.sortOrder - second.sortOrder),
-    careDayKey: resolveCareDayKey(storedCareDayKey, now),
+    careDayKey,
     reminderSettings: normalizeReminderSettings(
       readStoredJson(REMINDER_SETTINGS_STORAGE_KEY),
     ),
@@ -1299,7 +1393,36 @@ function normalizeMedication(value: unknown): Medication | null {
     },
     notes: normalizeString(value.notes),
     isActive: typeof value.isActive === "boolean" ? value.isActive : true,
+    activeFrom: normalizeOptionalDateKey(value.activeFrom),
+    activeUntil: normalizeOptionalDateKey(value.activeUntil),
   };
+}
+
+function normalizeOptionalDateKey(value: unknown) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const dateKey = value.trim();
+  return getDateFromKey(dateKey) ? dateKey : undefined;
+}
+
+function isMedicationTrackableOnDate(medication: Medication, dateKey: string) {
+  if (medication.activeFrom && dateKey < medication.activeFrom) {
+    return false;
+  }
+
+  if (medication.isActive) {
+    return !medication.activeUntil || dateKey <= medication.activeUntil;
+  }
+
+  if (medication.activeUntil) {
+    return dateKey <= medication.activeUntil;
+  }
+
+  // Legacy deactivated items without an end date stay out of due counts so
+  // historical charts are not rewritten, while their intake logs remain.
+  return false;
 }
 
 function normalizeIntakeLog(value: unknown): IntakeLog | null {
@@ -1624,15 +1747,19 @@ function getTodayMedicationLog(
 }
 
 function buildMedicationEntriesForDate(
-  activeMedications: Medication[],
+  medications: Medication[],
   logs: IntakeLog[],
   date: Date,
   dateKey: string,
 ) {
   const entries: TodayMedication[] = [];
 
-  activeMedications
-    .filter((medication) => isMedicationDueOnDate(medication, date))
+  medications
+    .filter(
+      (medication) =>
+        isMedicationTrackableOnDate(medication, dateKey) &&
+        isMedicationDueOnDate(medication, date),
+    )
     .forEach((medication) => {
       const scheduleType = getMedicationScheduleType(medication);
 
@@ -1698,37 +1825,68 @@ function buildMedicationEntriesForDate(
   });
 }
 
-function getAdherenceStats(
-  activeMedications: Medication[],
+function getAdherenceDaySeries(
+  medications: Medication[],
   logs: IntakeLog[],
   endDate: Date,
-) {
+  dayCount: number,
+): AdherenceDayPoint[] {
+  const safeDayCount = Math.max(1, dayCount);
+  const points: AdherenceDayPoint[] = [];
+
+  for (let dayOffset = safeDayCount - 1; dayOffset >= 0; dayOffset -= 1) {
+    const date = subDays(endDate, dayOffset);
+    const dateKey = getDateKey(date);
+    const entries = buildMedicationEntriesForDate(
+      medications,
+      logs,
+      date,
+      dateKey,
+    );
+    const due = entries.length;
+    const taken = entries.filter((entry) => entry.isTaken).length;
+
+    points.push({
+      dateKey,
+      label: format(date, "MMM d, yyyy"),
+      shortLabel:
+        safeDayCount <= 7
+          ? format(date, "EEE")
+          : safeDayCount <= 90
+            ? format(date, "MMM d")
+            : format(date, "MMM"),
+      due,
+      taken,
+      rate: due === 0 ? 0 : Math.round((taken / due) * 100),
+    });
+  }
+
+  return points;
+}
+
+function getAdherenceStats(
+  medications: Medication[],
+  logs: IntakeLog[],
+  endDate: Date,
+  dayCount = 7,
+): AdherenceStats {
+  const series = getAdherenceDaySeries(medications, logs, endDate, dayCount);
   let due = 0;
   let taken = 0;
   let streak = 0;
   let isStreakOpen = true;
 
-  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
-    const date = subDays(endDate, dayOffset);
-    const dateKey = getDateKey(date);
-    const entries = buildMedicationEntriesForDate(
-      activeMedications,
-      logs,
-      date,
-      dateKey,
-    );
-    const dayDue = entries.length;
-    const dayTaken = entries.filter((entry) => entry.isTaken).length;
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    const point = series[index];
+    due += point.due;
+    taken += point.taken;
 
-    due += dayDue;
-    taken += dayTaken;
-
-    if (isStreakOpen && dayDue > 0 && dayTaken === dayDue) {
+    if (isStreakOpen && point.due > 0 && point.taken === point.due) {
       streak += 1;
       continue;
     }
 
-    if (dayDue > 0) {
+    if (point.due > 0) {
       isStreakOpen = false;
     }
   }
@@ -2163,12 +2321,30 @@ export default function MedTrackApp() {
   const adherenceStats = useMemo<AdherenceStats>(
     () =>
       getAdherenceStats(
-        activeMedications,
+        medications,
         logs,
         careDayDate ?? today ?? new Date(),
+        7,
       ),
-    [activeMedications, careDayDate, logs, today],
+    [careDayDate, logs, medications, today],
   );
+
+  const adherenceSeriesByRange = useMemo(() => {
+    const endDate = careDayDate ?? today ?? new Date();
+
+    return ADHERENCE_RANGE_OPTIONS.reduce(
+      (seriesByRange, range) => {
+        seriesByRange[range.id] = getAdherenceDaySeries(
+          medications,
+          logs,
+          endDate,
+          range.days,
+        );
+        return seriesByRange;
+      },
+      {} as Record<AdherenceRangeId, AdherenceDayPoint[]>,
+    );
+  }, [careDayDate, logs, medications, today]);
 
   const orderedMedicationGroups = useMemo<OrderedMedicationGroup[]>(() => {
     const groups = new Map<string, TodayMedication[]>();
@@ -2627,7 +2803,11 @@ export default function MedTrackApp() {
   }
 
   function handleImportStarterPlan() {
-    const nextMedications = mergePersonalMedicationPlan(medications, true);
+    const nextMedications = mergePersonalMedicationPlan(
+      medications,
+      true,
+      todayKey || getDefaultCareDayKey(new Date()),
+    );
 
     setCategories((currentCategories) =>
       ensureItemsById(currentCategories, DEFAULT_MEDICATION_CATEGORIES),
@@ -2648,7 +2828,7 @@ export default function MedTrackApp() {
     }
 
     setMedications(nextMedications);
-    toast.success("Personal plan updated");
+    toast.success("Personal plan updated. History logs were kept.");
   }
 
   function handleMedicationSubmit(event: FormEvent<HTMLFormElement>) {
@@ -2683,6 +2863,10 @@ export default function MedTrackApp() {
       return;
     }
 
+    const existingMedication = form.id
+      ? medications.find((medication) => medication.id === form.id)
+      : undefined;
+
     const medication: Medication = {
       id: form.id ?? createId(),
       name,
@@ -2700,6 +2884,11 @@ export default function MedTrackApp() {
       },
       notes: form.notes.trim(),
       isActive: true,
+      activeFrom:
+        existingMedication?.activeFrom ??
+        todayKey ??
+        getDefaultCareDayKey(new Date()),
+      activeUntil: undefined,
     };
 
     setMedications((currentMedications) => {
@@ -2712,7 +2901,11 @@ export default function MedTrackApp() {
       return [...currentMedications, medication];
     });
 
-    toast.success(form.id ? "Medication updated" : "Medication added");
+    toast.success(
+      form.id
+        ? "Medication updated. History logs were kept."
+        : "Medication added. Existing history was not changed.",
+    );
     resetForm();
     setActiveTab("medications");
   }
@@ -2738,21 +2931,35 @@ export default function MedTrackApp() {
 
   function handleDeleteMedication(medication: Medication) {
     const shouldRemove = window.confirm(
-      `Remove ${medication.name} from active medications?`,
+      `Remove ${medication.name} from the daily list?\n\nHistory logs stay saved. Past adherence is not deleted.`,
     );
 
     if (!shouldRemove) {
       return;
     }
 
+    const lastTrackableDateKey = careDayDate
+      ? getDateKey(subDays(careDayDate, 1))
+      : medication.activeUntil;
+
     setMedications((currentMedications) =>
       currentMedications.map((currentMedication) =>
         currentMedication.id === medication.id
-          ? { ...currentMedication, isActive: false }
+          ? {
+              ...currentMedication,
+              isActive: false,
+              // Stop counting this item from today onward without erasing older days.
+              activeUntil:
+                currentMedication.activeUntil &&
+                lastTrackableDateKey &&
+                currentMedication.activeUntil < lastTrackableDateKey
+                  ? currentMedication.activeUntil
+                  : lastTrackableDateKey,
+            }
           : currentMedication,
       ),
     );
-    toast.success("Medication removed");
+    toast.success("Removed from daily list. History logs kept.");
   }
 
   function handleMarkAsTaken(entry: TodayMedication) {
@@ -3065,6 +3272,7 @@ export default function MedTrackApp() {
               careDayLabel={todayLabel}
               currentClockLabel={currentClockLabel}
               adherenceStats={adherenceStats}
+              adherenceSeriesByRange={adherenceSeriesByRange}
               reminderSettings={reminderSettings}
               categories={categories}
               routineCategories={routineCategories}
@@ -3158,6 +3366,7 @@ function DashboardView({
   careDayLabel,
   currentClockLabel,
   adherenceStats,
+  adherenceSeriesByRange,
   reminderSettings,
   categories,
   routineCategories,
@@ -3177,6 +3386,7 @@ function DashboardView({
   careDayLabel: string;
   currentClockLabel: string;
   adherenceStats: AdherenceStats;
+  adherenceSeriesByRange: Record<AdherenceRangeId, AdherenceDayPoint[]>;
   reminderSettings: ReminderSettings;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
@@ -3187,6 +3397,8 @@ function DashboardView({
   onAddMedication: () => void;
   onEndCareDay: () => void;
 }) {
+  const [adherenceRange, setAdherenceRange] =
+    useState<AdherenceRangeId>("7d");
   const timedMedications = todayMedications.filter(
     (entry) => entry.scheduleType === "timed",
   );
@@ -3330,6 +3542,12 @@ function DashboardView({
           tone="amber"
         />
       </div>
+
+      <AdherenceChartCard
+        rangeId={adherenceRange}
+        onRangeChange={setAdherenceRange}
+        series={adherenceSeriesByRange[adherenceRange]}
+      />
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[1fr_22rem]">
         <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
@@ -3864,8 +4082,8 @@ function MedicationListView({
                     className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                     type="button"
                     onClick={() => onDelete(medication)}
-                    title="Delete medication"
-                    aria-label={`Delete ${medication.name}`}
+                    title="Remove from daily list (keeps history)"
+                    aria-label={`Remove ${medication.name} from daily list`}
                   >
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
                   </button>
@@ -4890,6 +5108,273 @@ function SyncStatusPanel({
           Last sync: {formatLogDate(lastCloudSyncAt)}
         </p>
       )}
+    </section>
+  );
+}
+
+function summarizeAdherenceSeries(series: AdherenceDayPoint[]) {
+  const due = series.reduce((sum, point) => sum + point.due, 0);
+  const taken = series.reduce((sum, point) => sum + point.taken, 0);
+  const trackedDays = series.filter((point) => point.due > 0).length;
+  const perfectDays = series.filter(
+    (point) => point.due > 0 && point.taken === point.due,
+  ).length;
+
+  return {
+    due,
+    taken,
+    rate: due === 0 ? 0 : Math.round((taken / due) * 100),
+    trackedDays,
+    perfectDays,
+  };
+}
+
+function buildChartDisplayPoints(series: AdherenceDayPoint[]) {
+  if (series.length <= 45) {
+    return series.map((point) => ({
+      ...point,
+      displayLabel: point.shortLabel,
+    }));
+  }
+
+  const bucketCount = 30;
+  const bucketSize = Math.ceil(series.length / bucketCount);
+  const buckets: Array<
+    AdherenceDayPoint & {
+      displayLabel: string;
+    }
+  > = [];
+
+  for (let index = 0; index < series.length; index += bucketSize) {
+    const chunk = series.slice(index, index + bucketSize);
+    const due = chunk.reduce((sum, point) => sum + point.due, 0);
+    const taken = chunk.reduce((sum, point) => sum + point.taken, 0);
+    const first = chunk[0];
+    const last = chunk[chunk.length - 1];
+
+    buckets.push({
+      dateKey: first.dateKey,
+      label:
+        first.dateKey === last.dateKey
+          ? first.label
+          : `${first.label} - ${last.label}`,
+      shortLabel: first.shortLabel,
+      displayLabel: first.shortLabel,
+      due,
+      taken,
+      rate: due === 0 ? 0 : Math.round((taken / due) * 100),
+    });
+  }
+
+  return buckets;
+}
+
+function AdherenceChartCard({
+  rangeId,
+  onRangeChange,
+  series,
+}: {
+  rangeId: AdherenceRangeId;
+  onRangeChange: (rangeId: AdherenceRangeId) => void;
+  series: AdherenceDayPoint[];
+}) {
+  const summary = summarizeAdherenceSeries(series);
+  const displayPoints = buildChartDisplayPoints(series);
+  const chartHeight = 168;
+  const chartWidth = Math.max(displayPoints.length * 18, 320);
+  const maxDue = Math.max(...displayPoints.map((point) => point.due), 1);
+  const rangeLabel =
+    ADHERENCE_RANGE_OPTIONS.find((range) => range.id === rangeId)?.label ??
+    rangeId;
+
+  return (
+    <section className="mt-5 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+            <h2 className="text-lg font-semibold text-zinc-950">
+              Adherence overview
+            </h2>
+          </div>
+          <p className="mt-1 max-w-2xl text-sm text-zinc-500">
+            Filter completion for the selected window. Adding or removing daily
+            items keeps older history; new items only count from the day they
+            were added.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {ADHERENCE_RANGE_OPTIONS.map((range) => {
+            const isSelected = range.id === rangeId;
+
+            return (
+              <button
+                key={range.id}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                  isSelected
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "border border-zinc-200 bg-white text-zinc-600 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-800"
+                }`}
+                type="button"
+                onClick={() => onRangeChange(range.id)}
+              >
+                {range.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-md bg-emerald-50 p-3">
+          <p className="text-xs font-semibold uppercase tracking-normal text-emerald-700">
+            Adherence
+          </p>
+          <p className="mt-1 text-2xl font-semibold text-emerald-950">
+            {summary.rate}%
+          </p>
+          <p className="mt-1 text-xs text-emerald-800">{rangeLabel}</p>
+        </div>
+        <div className="rounded-md bg-sky-50 p-3">
+          <p className="text-xs font-semibold uppercase tracking-normal text-sky-700">
+            Taken / due
+          </p>
+          <p className="mt-1 text-2xl font-semibold text-sky-950">
+            {summary.taken}/{summary.due}
+          </p>
+          <p className="mt-1 text-xs text-sky-800">Scheduled items completed</p>
+        </div>
+        <div className="rounded-md bg-amber-50 p-3">
+          <p className="text-xs font-semibold uppercase tracking-normal text-amber-700">
+            Perfect days
+          </p>
+          <p className="mt-1 text-2xl font-semibold text-amber-950">
+            {summary.perfectDays}
+          </p>
+          <p className="mt-1 text-xs text-amber-800">
+            of {summary.trackedDays} tracked days
+          </p>
+        </div>
+        <div className="rounded-md bg-zinc-50 p-3">
+          <p className="text-xs font-semibold uppercase tracking-normal text-zinc-500">
+            Daily average
+          </p>
+          <p className="mt-1 text-2xl font-semibold text-zinc-950">
+            {summary.trackedDays === 0
+              ? "0"
+              : (summary.taken / summary.trackedDays).toFixed(1)}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">Taken items per tracked day</p>
+        </div>
+      </div>
+
+      <div className="mt-5 overflow-x-auto rounded-lg border border-zinc-200 bg-zinc-50/70 p-3">
+        {displayPoints.every((point) => point.due === 0) ? (
+          <p className="rounded-md bg-white p-4 text-sm text-zinc-500">
+            No scheduled items in this range yet. Mark doses to build the chart.
+          </p>
+        ) : (
+          <svg
+            role="img"
+            aria-label={`Adherence chart for ${rangeLabel}`}
+            viewBox={`0 0 ${chartWidth} ${chartHeight + 36}`}
+            className="min-w-full"
+            style={{ height: chartHeight + 36, minWidth: chartWidth }}
+          >
+            <title>{`Adherence chart for ${rangeLabel}`}</title>
+            {[0, 0.25, 0.5, 0.75, 1].map((fraction) => {
+              const y = chartHeight - fraction * (chartHeight - 12) + 8;
+
+              return (
+                <line
+                  key={`grid-${fraction}`}
+                  x1={0}
+                  x2={chartWidth}
+                  y1={y}
+                  y2={y}
+                  stroke="#e4e4e7"
+                  strokeWidth={1}
+                />
+              );
+            })}
+
+            {displayPoints.map((point, index) => {
+              const slotWidth = chartWidth / displayPoints.length;
+              const barWidth = Math.max(slotWidth * 0.55, 4);
+              const x = index * slotWidth + (slotWidth - barWidth) / 2;
+              const dueHeight =
+                point.due === 0
+                  ? 0
+                  : Math.max((point.due / maxDue) * (chartHeight - 12), 2);
+              const takenHeight =
+                point.due === 0
+                  ? 0
+                  : Math.max((point.taken / maxDue) * (chartHeight - 12), point.taken > 0 ? 2 : 0);
+              const baseY = chartHeight + 8;
+              const showLabel =
+                displayPoints.length <= 14 ||
+                index === 0 ||
+                index === displayPoints.length - 1 ||
+                index % Math.ceil(displayPoints.length / 6) === 0;
+
+              return (
+                <g key={`${point.dateKey}-${index}`}>
+                  <rect
+                    x={x}
+                    y={baseY - dueHeight}
+                    width={barWidth}
+                    height={dueHeight}
+                    rx={3}
+                    fill="#d4d4d8"
+                  />
+                  <rect
+                    x={x}
+                    y={baseY - takenHeight}
+                    width={barWidth}
+                    height={takenHeight}
+                    rx={3}
+                    fill={
+                      point.due > 0 && point.taken === point.due
+                        ? "#059669"
+                        : "#34d399"
+                    }
+                  >
+                    <title>
+                      {`${point.label}: ${point.taken}/${point.due} (${point.rate}%)`}
+                    </title>
+                  </rect>
+                  {showLabel && (
+                    <text
+                      x={x + barWidth / 2}
+                      y={chartHeight + 28}
+                      textAnchor="middle"
+                      className="fill-zinc-500"
+                      fontSize="10"
+                    >
+                      {point.displayLabel}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-zinc-500">
+        <span className="inline-flex items-center gap-2">
+          <span className="h-2.5 w-2.5 rounded-sm bg-zinc-300" />
+          Due
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="h-2.5 w-2.5 rounded-sm bg-emerald-400" />
+          Taken
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" />
+          Perfect day
+        </span>
+      </div>
     </section>
   );
 }

@@ -56,6 +56,10 @@ export interface Medication {
   schedule: MedicationSchedule;
   notes: string;
   isActive: boolean;
+  /** First care-day (yyyy-MM-dd) this item counts toward due/adherence. */
+  activeFrom?: string;
+  /** Last care-day (yyyy-MM-dd) this item counts toward due/adherence after deactivation. */
+  activeUntil?: string;
 }
 
 export interface IntakeLog {
