@@ -48,7 +48,13 @@ import type {
   WeekDay,
 } from "@/types";
 
-type TabId = "dashboard" | "medications" | "add" | "history" | "settings";
+type TabId =
+  | "dashboard"
+  | "reports"
+  | "medications"
+  | "add"
+  | "history"
+  | "settings";
 
 type MedicationFormState = {
   id: string | null;
@@ -114,6 +120,50 @@ type AdherenceDayPoint = {
   dateKey: string;
   label: string;
   shortLabel: string;
+  due: number;
+  taken: number;
+  rate: number;
+};
+
+type ReportEntryDetail = {
+  key: string;
+  medicationId: string;
+  medicationName: string;
+  dosage: string;
+  unit: string;
+  categoryId: string;
+  scheduleLabel: string;
+  isTaken: boolean;
+};
+
+type ReportDayDetail = AdherenceDayPoint & {
+  weekdayLabel: string;
+  entries: ReportEntryDetail[];
+};
+
+type ItemReportPoint = {
+  dateKey: string;
+  shortLabel: string;
+  wasDue: boolean;
+  isTaken: boolean;
+};
+
+type ItemReport = {
+  medicationId: string;
+  medicationName: string;
+  dosage: string;
+  unit: string;
+  categoryId: string;
+  isActive: boolean;
+  due: number;
+  taken: number;
+  missed: number;
+  rate: number;
+  points: ItemReportPoint[];
+};
+
+type CategoryReport = {
+  categoryId: string;
   due: number;
   taken: number;
   rate: number;
@@ -221,7 +271,8 @@ const TABS: {
   label: string;
   icon: typeof LayoutDashboard;
 }[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "dashboard", label: "Today", icon: LayoutDashboard },
+  { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "medications", label: "My Medications", icon: ClipboardList },
   { id: "add", label: "Add Medication", icon: Plus },
   { id: "history", label: "History", icon: History },
@@ -1899,6 +1950,157 @@ function getAdherenceStats(
   };
 }
 
+function buildReportEntryDetail(
+  entry: TodayMedication,
+  routineCategories: RoutineCategory[],
+): ReportEntryDetail {
+  return {
+    key: getTodayMedicationKey(entry),
+    medicationId: entry.medication.id,
+    medicationName: entry.medication.name,
+    dosage: entry.medication.dosage,
+    unit: entry.medication.unit,
+    categoryId: entry.medication.category,
+    scheduleLabel: getEntryScheduleLabel(entry, routineCategories),
+    isTaken: entry.isTaken,
+  };
+}
+
+function getReportDayDetails(
+  medications: Medication[],
+  logs: IntakeLog[],
+  endDate: Date,
+  dayCount: number,
+  routineCategories: RoutineCategory[],
+): ReportDayDetail[] {
+  const safeDayCount = Math.max(1, dayCount);
+  const days: ReportDayDetail[] = [];
+
+  for (let dayOffset = 0; dayOffset < safeDayCount; dayOffset += 1) {
+    const date = subDays(endDate, dayOffset);
+    const dateKey = getDateKey(date);
+    const entries = buildMedicationEntriesForDate(
+      medications,
+      logs,
+      date,
+      dateKey,
+    );
+    const due = entries.length;
+    const taken = entries.filter((entry) => entry.isTaken).length;
+
+    days.push({
+      dateKey,
+      label: format(date, "EEEE, MMM d, yyyy"),
+      shortLabel:
+        safeDayCount <= 7
+          ? format(date, "EEE")
+          : safeDayCount <= 90
+            ? format(date, "MMM d")
+            : format(date, "MMM"),
+      weekdayLabel: format(date, "EEEE"),
+      due,
+      taken,
+      rate: due === 0 ? 0 : Math.round((taken / due) * 100),
+      entries: entries.map((entry) =>
+        buildReportEntryDetail(entry, routineCategories),
+      ),
+    });
+  }
+
+  return days;
+}
+
+function getItemReports(
+  medications: Medication[],
+  dayDetails: ReportDayDetail[],
+): ItemReport[] {
+  const reportsById = new Map<string, ItemReport>();
+
+  dayDetails.forEach((day) => {
+    day.entries.forEach((entry) => {
+      const existing = reportsById.get(entry.medicationId);
+      const point: ItemReportPoint = {
+        dateKey: day.dateKey,
+        shortLabel: day.shortLabel,
+        wasDue: true,
+        isTaken: entry.isTaken,
+      };
+
+      if (!existing) {
+        const medication = medications.find(
+          (item) => item.id === entry.medicationId,
+        );
+
+        reportsById.set(entry.medicationId, {
+          medicationId: entry.medicationId,
+          medicationName: entry.medicationName,
+          dosage: entry.dosage,
+          unit: entry.unit,
+          categoryId: entry.categoryId,
+          isActive: medication?.isActive ?? false,
+          due: 1,
+          taken: entry.isTaken ? 1 : 0,
+          missed: entry.isTaken ? 0 : 1,
+          rate: entry.isTaken ? 100 : 0,
+          points: [point],
+        });
+        return;
+      }
+
+      existing.due += 1;
+      existing.taken += entry.isTaken ? 1 : 0;
+      existing.missed += entry.isTaken ? 0 : 1;
+      existing.rate =
+        existing.due === 0
+          ? 0
+          : Math.round((existing.taken / existing.due) * 100);
+      existing.points.push(point);
+    });
+  });
+
+  return Array.from(reportsById.values())
+    .map((report) => ({
+      ...report,
+      points: [...report.points].reverse(),
+    }))
+    .sort((first, second) => {
+      if (first.rate !== second.rate) {
+        return first.rate - second.rate;
+      }
+
+      return first.medicationName.localeCompare(second.medicationName);
+    });
+}
+
+function getCategoryReports(itemReports: ItemReport[]): CategoryReport[] {
+  const reportsByCategory = new Map<string, CategoryReport>();
+
+  itemReports.forEach((item) => {
+    const existing = reportsByCategory.get(item.categoryId);
+
+    if (!existing) {
+      reportsByCategory.set(item.categoryId, {
+        categoryId: item.categoryId,
+        due: item.due,
+        taken: item.taken,
+        rate: item.due === 0 ? 0 : Math.round((item.taken / item.due) * 100),
+      });
+      return;
+    }
+
+    existing.due += item.due;
+    existing.taken += item.taken;
+    existing.rate =
+      existing.due === 0
+        ? 0
+        : Math.round((existing.taken / existing.due) * 100);
+  });
+
+  return Array.from(reportsByCategory.values()).sort(
+    (first, second) => second.rate - first.rate,
+  );
+}
+
 function getEntryScheduleLabel(
   entry: TodayMedication,
   routineCategories: RoutineCategory[],
@@ -2328,23 +2530,6 @@ export default function MedTrackApp() {
       ),
     [careDayDate, logs, medications, today],
   );
-
-  const adherenceSeriesByRange = useMemo(() => {
-    const endDate = careDayDate ?? today ?? new Date();
-
-    return ADHERENCE_RANGE_OPTIONS.reduce(
-      (seriesByRange, range) => {
-        seriesByRange[range.id] = getAdherenceDaySeries(
-          medications,
-          logs,
-          endDate,
-          range.days,
-        );
-        return seriesByRange;
-      },
-      {} as Record<AdherenceRangeId, AdherenceDayPoint[]>,
-    );
-  }, [careDayDate, logs, medications, today]);
 
   const orderedMedicationGroups = useMemo<OrderedMedicationGroup[]>(() => {
     const groups = new Map<string, TodayMedication[]>();
@@ -3268,11 +3453,9 @@ export default function MedTrackApp() {
               orderedMedicationGroups={orderedMedicationGroups}
               takenTodayCount={takenTodayCount}
               pendingTodayCount={pendingTodayCount}
-              logCount={logs.length}
               careDayLabel={todayLabel}
               currentClockLabel={currentClockLabel}
               adherenceStats={adherenceStats}
-              adherenceSeriesByRange={adherenceSeriesByRange}
               reminderSettings={reminderSettings}
               categories={categories}
               routineCategories={routineCategories}
@@ -3281,7 +3464,18 @@ export default function MedTrackApp() {
               onMarkGroupAsTaken={handleMarkGroupAsTaken}
               onUndoGroupTaken={handleUndoGroupTaken}
               onAddMedication={() => setActiveTab("add")}
+              onOpenReports={() => setActiveTab("reports")}
               onEndCareDay={handleEndCareDay}
+            />
+          )}
+
+          {activeTab === "reports" && (
+            <ReportsView
+              medications={medications}
+              logs={logs}
+              careDayDate={careDayDate}
+              categories={categories}
+              routineCategories={routineCategories}
             />
           )}
 
@@ -3362,11 +3556,9 @@ function DashboardView({
   orderedMedicationGroups,
   takenTodayCount,
   pendingTodayCount,
-  logCount,
   careDayLabel,
   currentClockLabel,
   adherenceStats,
-  adherenceSeriesByRange,
   reminderSettings,
   categories,
   routineCategories,
@@ -3375,6 +3567,7 @@ function DashboardView({
   onMarkGroupAsTaken,
   onUndoGroupTaken,
   onAddMedication,
+  onOpenReports,
   onEndCareDay,
 }: {
   activeMedicationCount: number;
@@ -3382,11 +3575,9 @@ function DashboardView({
   orderedMedicationGroups: OrderedMedicationGroup[];
   takenTodayCount: number;
   pendingTodayCount: number;
-  logCount: number;
   careDayLabel: string;
   currentClockLabel: string;
   adherenceStats: AdherenceStats;
-  adherenceSeriesByRange: Record<AdherenceRangeId, AdherenceDayPoint[]>;
   reminderSettings: ReminderSettings;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
@@ -3395,10 +3586,9 @@ function DashboardView({
   onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
   onUndoGroupTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
+  onOpenReports: () => void;
   onEndCareDay: () => void;
 }) {
-  const [adherenceRange, setAdherenceRange] =
-    useState<AdherenceRangeId>("7d");
   const timedMedications = todayMedications.filter(
     (entry) => entry.scheduleType === "timed",
   );
@@ -3461,8 +3651,8 @@ function DashboardView({
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
-        title="Dashboard"
-        description="Care-day schedule and progress"
+        title="Today"
+        description="Your daily care checklist"
         action={
           <div className="flex flex-col gap-2 sm:flex-row">
             <button
@@ -3535,19 +3725,20 @@ function DashboardView({
           value={pendingTodayCount}
           tone="rose"
         />
-        <StatTile
-          icon={BarChart3}
-          label="7-day adherence"
-          value={`${adherenceStats.rate}%`}
-          tone="amber"
-        />
+        <button
+          className="text-left"
+          type="button"
+          onClick={onOpenReports}
+          title="Open detailed reports"
+        >
+          <StatTile
+            icon={BarChart3}
+            label="7-day adherence"
+            value={`${adherenceStats.rate}%`}
+            tone="amber"
+          />
+        </button>
       </div>
-
-      <AdherenceChartCard
-        rangeId={adherenceRange}
-        onRangeChange={setAdherenceRange}
-        series={adherenceSeriesByRange[adherenceRange]}
-      />
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[1fr_22rem]">
         <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
@@ -3709,7 +3900,7 @@ function DashboardView({
           <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-emerald-700" />
-              <h2 className="font-semibold text-zinc-950">Reports</h2>
+              <h2 className="font-semibold text-zinc-950">Quick status</h2>
             </div>
             <dl className="mt-4 space-y-3 text-sm">
               <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
@@ -3717,10 +3908,6 @@ function DashboardView({
                 <dd className="font-semibold text-zinc-900">
                   {activeMedicationCount}
                 </dd>
-              </div>
-              <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
-                <dt className="text-zinc-500">History logs</dt>
-                <dd className="font-semibold text-zinc-900">{logCount}</dd>
               </div>
               <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-3">
                 <dt className="text-zinc-500">7-day taken</dt>
@@ -3735,6 +3922,14 @@ function DashboardView({
                 </dd>
               </div>
             </dl>
+            <button
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100"
+              type="button"
+              onClick={onOpenReports}
+            >
+              <BarChart3 className="h-4 w-4" aria-hidden="true" />
+              Open detailed reports
+            </button>
           </section>
 
           <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
@@ -5112,6 +5307,495 @@ function SyncStatusPanel({
   );
 }
 
+function ReportsView({
+  medications,
+  logs,
+  careDayDate,
+  categories,
+  routineCategories,
+}: {
+  medications: Medication[];
+  logs: IntakeLog[];
+  careDayDate: Date;
+  categories: MedicationCategoryOption[];
+  routineCategories: RoutineCategory[];
+}) {
+  const [rangeId, setRangeId] = useState<AdherenceRangeId>("7d");
+  const [expandedDayKey, setExpandedDayKey] = useState<string | null>(
+    getDateKey(careDayDate),
+  );
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const dayCount =
+    ADHERENCE_RANGE_OPTIONS.find((range) => range.id === rangeId)?.days ?? 7;
+
+  const dayDetails = useMemo(
+    () =>
+      getReportDayDetails(
+        medications,
+        logs,
+        careDayDate,
+        dayCount,
+        routineCategories,
+      ),
+    [careDayDate, dayCount, logs, medications, routineCategories],
+  );
+
+  const series = useMemo(
+    () =>
+      [...dayDetails]
+        .reverse()
+        .map(({ entries: _entries, weekdayLabel: _weekdayLabel, ...point }) => point),
+    [dayDetails],
+  );
+
+  const itemReports = useMemo(
+    () => getItemReports(medications, dayDetails),
+    [dayDetails, medications],
+  );
+
+  const categoryReports = useMemo(
+    () => getCategoryReports(itemReports),
+    [itemReports],
+  );
+
+  const selectedItem =
+    itemReports.find((item) => item.medicationId === selectedItemId) ??
+    itemReports[0] ??
+    null;
+
+  useEffect(() => {
+    if (
+      selectedItemId &&
+      !itemReports.some((item) => item.medicationId === selectedItemId)
+    ) {
+      setSelectedItemId(null);
+    }
+  }, [itemReports, selectedItemId]);
+
+  return (
+    <div className="mx-auto max-w-7xl">
+      <PageHeader
+        title="Reports"
+        description="Detailed adherence charts, day reviews, and per-item performance"
+      />
+
+      <AdherenceChartCard
+        rangeId={rangeId}
+        onRangeChange={(nextRangeId) => {
+          setRangeId(nextRangeId);
+          setExpandedDayKey(getDateKey(careDayDate));
+        }}
+        series={series}
+      />
+
+      <section className="mt-5 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-zinc-950">
+              Category breakdown
+            </h2>
+            <p className="text-sm text-zinc-500">
+              Completion rate by category in the selected range
+            </p>
+          </div>
+        </div>
+
+        {categoryReports.length === 0 ? (
+          <p className="rounded-md border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-500">
+            No scheduled items in this range yet.
+          </p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {categoryReports.map((report) => {
+              const category = getMedicationCategoryOption(
+                categories,
+                report.categoryId,
+              );
+              const toneClasses = CATEGORY_TONE_CLASSES[category.tone];
+
+              return (
+                <article
+                  key={report.categoryId}
+                  className="rounded-lg border border-zinc-200 p-4"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <CategoryBadge
+                      categoryId={report.categoryId}
+                      categories={categories}
+                    />
+                    <span className="text-lg font-semibold text-zinc-950">
+                      {report.rate}%
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm text-zinc-500">
+                    {report.taken}/{report.due} completed
+                  </p>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
+                    <div
+                      className={`h-full rounded-full ${toneClasses.swatchClassName}`}
+                      style={{ width: `${report.rate}%` }}
+                    />
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <div className="mt-5 grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-zinc-950">
+              Day-by-day review
+            </h2>
+            <p className="text-sm text-zinc-500">
+              Expand any day to see exactly what was done and what was missed
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            {dayDetails.map((day) => {
+              const isExpanded = expandedDayKey === day.dateKey;
+              const missedEntries = day.entries.filter((entry) => !entry.isTaken);
+              const takenEntries = day.entries.filter((entry) => entry.isTaken);
+
+              return (
+                <article
+                  key={day.dateKey}
+                  className="overflow-hidden rounded-lg border border-zinc-200"
+                >
+                  <button
+                    className="flex w-full items-center justify-between gap-3 bg-zinc-50 px-3 py-3 text-left transition hover:bg-white"
+                    type="button"
+                    onClick={() =>
+                      setExpandedDayKey((current) =>
+                        current === day.dateKey ? null : day.dateKey,
+                      )
+                    }
+                    aria-expanded={isExpanded}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-zinc-950">
+                        {day.label}
+                      </span>
+                      <span className="mt-1 block text-xs font-medium text-zinc-500">
+                        {day.due === 0
+                          ? "No scheduled items"
+                          : `${day.taken}/${day.due} done · ${missedEntries.length} missed · ${day.rate}%`}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span
+                        className={`rounded-md px-2 py-1 text-xs font-semibold ${
+                          day.due === 0
+                            ? "bg-zinc-100 text-zinc-500"
+                            : day.rate === 100
+                              ? "bg-emerald-100 text-emerald-800"
+                              : day.rate >= 70
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-rose-100 text-rose-800"
+                        }`}
+                      >
+                        {day.due === 0 ? "Empty" : `${day.rate}%`}
+                      </span>
+                      <ChevronDown
+                        className={`h-4 w-4 text-zinc-500 transition ${
+                          isExpanded ? "rotate-180" : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="space-y-4 border-t border-zinc-200 p-3">
+                      {day.entries.length === 0 ? (
+                        <p className="rounded-md bg-zinc-50 p-3 text-sm text-zinc-500">
+                          Nothing was scheduled for this care day.
+                        </p>
+                      ) : (
+                        <>
+                          <div>
+                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-emerald-700">
+                              Done ({takenEntries.length})
+                            </h3>
+                            {takenEntries.length === 0 ? (
+                              <p className="rounded-md bg-zinc-50 p-3 text-sm text-zinc-500">
+                                No items completed.
+                              </p>
+                            ) : (
+                              <div className="space-y-2">
+                                {takenEntries.map((entry) => (
+                                  <ReportEntryRow
+                                    key={`taken-${entry.key}`}
+                                    entry={entry}
+                                    categories={categories}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-rose-700">
+                              Missed ({missedEntries.length})
+                            </h3>
+                            {missedEntries.length === 0 ? (
+                              <p className="rounded-md bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
+                                Perfect day — nothing missed.
+                              </p>
+                            ) : (
+                              <div className="space-y-2">
+                                {missedEntries.map((entry) => (
+                                  <ReportEntryRow
+                                    key={`missed-${entry.key}`}
+                                    entry={entry}
+                                    categories={categories}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-zinc-950">
+              Item performance
+            </h2>
+            <p className="text-sm text-zinc-500">
+              See how consistently each item was completed
+            </p>
+          </div>
+
+          {itemReports.length === 0 ? (
+            <EmptyState
+              icon={BarChart3}
+              title="No item data yet"
+              description="Once you track scheduled items, per-item reports appear here."
+            />
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                {itemReports.map((item) => {
+                  const isSelected =
+                    (selectedItem?.medicationId ?? null) === item.medicationId;
+
+                  return (
+                    <button
+                      key={item.medicationId}
+                      className={`w-full rounded-lg border p-3 text-left transition ${
+                        isSelected
+                          ? "border-emerald-300 bg-emerald-50/70 shadow-sm"
+                          : "border-zinc-200 bg-white hover:border-emerald-200 hover:bg-emerald-50/40"
+                      }`}
+                      type="button"
+                      onClick={() => setSelectedItemId(item.medicationId)}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-semibold text-zinc-950">
+                              {item.medicationName}
+                            </h3>
+                            <CategoryBadge
+                              categoryId={item.categoryId}
+                              categories={categories}
+                            />
+                            {!item.isActive && (
+                              <span className="rounded-md border border-zinc-200 bg-zinc-100 px-2 py-0.5 text-[11px] font-semibold text-zinc-600">
+                                Inactive
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-xs text-zinc-500">
+                            {item.dosage} {item.unit} · {item.taken}/{item.due}{" "}
+                            · {item.missed} missed
+                          </p>
+                        </div>
+                        <span
+                          className={`shrink-0 text-sm font-semibold ${
+                            item.rate >= 80
+                              ? "text-emerald-700"
+                              : item.rate >= 50
+                                ? "text-amber-700"
+                                : "text-rose-700"
+                          }`}
+                        >
+                          {item.rate}%
+                        </span>
+                      </div>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
+                        <div
+                          className={`h-full rounded-full ${
+                            item.rate >= 80
+                              ? "bg-emerald-500"
+                              : item.rate >= 50
+                                ? "bg-amber-500"
+                                : "bg-rose-500"
+                          }`}
+                          style={{ width: `${item.rate}%` }}
+                        />
+                      </div>
+                      <ItemSparkline points={item.points} />
+                    </button>
+                  );
+                })}
+              </div>
+
+              {selectedItem && (
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold text-zinc-950">
+                      {selectedItem.medicationName}
+                    </h3>
+                    <CategoryBadge
+                      categoryId={selectedItem.categoryId}
+                      categories={categories}
+                    />
+                  </div>
+                  <p className="mt-2 text-sm text-zinc-500">
+                    Detailed timeline for the selected range. Green = done,
+                    rose = missed, gray = not due that day.
+                  </p>
+                  <div className="mt-4 grid grid-cols-7 gap-1.5 sm:grid-cols-10">
+                    {selectedItem.points.map((point) => (
+                      <div
+                        key={`${selectedItem.medicationId}-${point.dateKey}`}
+                        className={`rounded-md px-1 py-2 text-center ${
+                          !point.wasDue
+                            ? "bg-zinc-200/70"
+                            : point.isTaken
+                              ? "bg-emerald-500 text-white"
+                              : "bg-rose-400 text-white"
+                        }`}
+                        title={`${point.dateKey}: ${
+                          !point.wasDue
+                            ? "Not due"
+                            : point.isTaken
+                              ? "Done"
+                              : "Missed"
+                        }`}
+                      >
+                        <span className="block text-[10px] font-semibold leading-3">
+                          {point.shortLabel}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <dl className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
+                    <div className="rounded-md bg-white p-2">
+                      <dt className="text-xs text-zinc-500">Due</dt>
+                      <dd className="font-semibold text-zinc-900">
+                        {selectedItem.due}
+                      </dd>
+                    </div>
+                    <div className="rounded-md bg-white p-2">
+                      <dt className="text-xs text-zinc-500">Done</dt>
+                      <dd className="font-semibold text-emerald-700">
+                        {selectedItem.taken}
+                      </dd>
+                    </div>
+                    <div className="rounded-md bg-white p-2">
+                      <dt className="text-xs text-zinc-500">Missed</dt>
+                      <dd className="font-semibold text-rose-700">
+                        {selectedItem.missed}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ReportEntryRow({
+  entry,
+  categories,
+}: {
+  entry: ReportEntryDetail;
+  categories: MedicationCategoryOption[];
+}) {
+  return (
+    <div
+      className={`flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between ${
+        entry.isTaken
+          ? "border-emerald-200 bg-emerald-50/60"
+          : "border-rose-200 bg-rose-50/50"
+      }`}
+    >
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="font-semibold text-zinc-950">{entry.medicationName}</p>
+          <CategoryBadge categoryId={entry.categoryId} categories={categories} />
+        </div>
+        <p className="mt-1 text-sm text-zinc-600">
+          {entry.dosage} {entry.unit} · {entry.scheduleLabel}
+        </p>
+      </div>
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
+          entry.isTaken
+            ? "bg-emerald-100 text-emerald-800"
+            : "bg-rose-100 text-rose-800"
+        }`}
+      >
+        {entry.isTaken ? (
+          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+        ) : (
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
+        {entry.isTaken ? "Done" : "Missed"}
+      </span>
+    </div>
+  );
+}
+
+function ItemSparkline({ points }: { points: ItemReportPoint[] }) {
+  if (points.length === 0) {
+    return null;
+  }
+
+  const displayPoints =
+    points.length > 42
+      ? points.slice(points.length - 42)
+      : points;
+
+  return (
+    <div className="mt-3 flex h-8 items-end gap-0.5">
+      {displayPoints.map((point) => (
+        <span
+          key={point.dateKey}
+          className={`min-w-0 flex-1 rounded-sm ${
+            !point.wasDue
+              ? "bg-zinc-200"
+              : point.isTaken
+                ? "bg-emerald-500"
+                : "bg-rose-400"
+          }`}
+          style={{ height: point.wasDue ? (point.isTaken ? "100%" : "55%") : "25%" }}
+          title={`${point.dateKey}: ${
+            !point.wasDue ? "Not due" : point.isTaken ? "Done" : "Missed"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
+
 function summarizeAdherenceSeries(series: AdherenceDayPoint[]) {
   const due = series.reduce((sum, point) => sum + point.due, 0);
   const taken = series.reduce((sum, point) => sum + point.taken, 0);
@@ -5188,7 +5872,7 @@ function AdherenceChartCard({
     rangeId;
 
   return (
-    <section className="mt-5 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+    <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -5198,9 +5882,8 @@ function AdherenceChartCard({
             </h2>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-zinc-500">
-            Filter completion for the selected window. Adding or removing daily
-            items keeps older history; new items only count from the day they
-            were added.
+            Filter by 1 day, 1 week, 1 month, 3 months, 6 months, or 1 year.
+            New items only affect adherence from the day they were added.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
