@@ -2783,6 +2783,7 @@ export default function MedTrackApp() {
   useEffect(() => {
     if (
       !isStorageReady ||
+      !isAuthenticated ||
       !today ||
       !todayKey ||
       !reminderSettings.browserNotifications
@@ -2821,6 +2822,7 @@ export default function MedTrackApp() {
         }
       });
   }, [
+    isAuthenticated,
     isStorageReady,
     orderedMedicationGroups,
     reminderSettings.browserNotifications,
@@ -2830,7 +2832,7 @@ export default function MedTrackApp() {
   ]);
 
   useEffect(() => {
-    if (!isStorageReady || !today) return;
+    if (!isAuthenticated || !isStorageReady || !today) return;
 
     const dateKey = getTehranDateKey(today);
     const currentTime = getTehranTime(today);
@@ -2927,7 +2929,7 @@ export default function MedTrackApp() {
         });
       }
     });
-  }, [healthData, isStorageReady, today]);
+  }, [healthData, isAuthenticated, isStorageReady, today]);
 
   function updateHealthData(
     updater: (currentData: HealthSyncData, updatedAt: string) => HealthSyncData,
