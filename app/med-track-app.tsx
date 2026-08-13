@@ -21,10 +21,12 @@ import {
   LayoutDashboard,
   LockKeyhole,
   LogOut,
+  Menu,
   Pill,
   Plus,
   RotateCcw,
   Save,
+  Scale,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -36,6 +38,13 @@ import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MedTrackLoading } from "./med-track-loading";
+import HealthTracker from "./health-tracker";
+import {
+  createDefaultHealthData,
+  mergeHealthData,
+  normalizeHealthData,
+  type HealthSyncData,
+} from "./health-data";
 import type {
   CategoryTone,
   IntakeLog,
@@ -47,14 +56,22 @@ import type {
   RoutineCategory,
   WeekDay,
 } from "@/types";
+import type {
+  BloodPressureSession,
+  DietCheckIn,
+  HealthSettings,
+  WeightEntry,
+} from "@/types/health";
 
 type TabId =
   | "dashboard"
+  | "health"
   | "reports"
   | "medications"
   | "add"
   | "history"
-  | "settings";
+  | "settings"
+  | "more";
 
 type MedicationFormState = {
   id: string | null;
@@ -209,17 +226,15 @@ type MedTrackSyncData = {
   updatedAt: string;
 };
 
-const LOGIN_USERNAME = "mail@mehrdadnaderi.com";
-const LOGIN_PASSWORD = "Naderi$2050";
 const MEDICATIONS_STORAGE_KEY = "medtrack-medications";
 const LOGS_STORAGE_KEY = "medtrack-intake-logs";
 const DELETED_LOG_IDS_STORAGE_KEY = "medtrack-deleted-log-ids";
-const AUTH_STORAGE_KEY = "medtrack-authenticated";
 const CATEGORIES_STORAGE_KEY = "medtrack-categories";
 const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
 const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
+const HEALTH_DATA_STORAGE_KEY = "medtrack-health-data-v1";
 const PERSONAL_PLAN_VERSION = 5;
 const AUTO_ROLLOVER_HOUR = 12;
 
@@ -272,11 +287,23 @@ const TABS: {
   icon: typeof LayoutDashboard;
 }[] = [
   { id: "dashboard", label: "Today", icon: LayoutDashboard },
+  { id: "health", label: "Health", icon: Scale },
   { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "medications", label: "My Medications", icon: ClipboardList },
-  { id: "add", label: "Add Medication", icon: Plus },
   { id: "history", label: "History", icon: History },
   { id: "settings", label: "Settings", icon: Settings },
+];
+
+const MOBILE_TABS: {
+  id: TabId;
+  label: string;
+  icon: typeof LayoutDashboard;
+}[] = [
+  { id: "dashboard", label: "Today", icon: LayoutDashboard },
+  { id: "health", label: "Health", icon: Scale },
+  { id: "reports", label: "Trends", icon: BarChart3 },
+  { id: "medications", label: "Meds", icon: Pill },
+  { id: "more", label: "More", icon: Menu },
 ];
 
 const CATEGORY_TONE_CLASSES: Record<
@@ -861,6 +888,28 @@ function getDateKey(date: Date) {
   return format(date, "yyyy-MM-dd");
 }
 
+function getTehranDateKey(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tehran",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getTehranTime(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Tehran",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.hour}:${values.minute}`;
+}
+
 function getDateFromKey(dateKey: string) {
   const date = parseISO(dateKey);
   return isValid(date) ? date : null;
@@ -1158,16 +1207,10 @@ function writeLocalSyncData(data: MedTrackSyncData) {
   );
 }
 
-function createSyncAuthHeader() {
-  return `Basic ${window.btoa(`${LOGIN_USERNAME}:${LOGIN_PASSWORD}`)}`;
-}
-
 async function readCloudSyncData(fallbackData: MedTrackSyncData, now: Date) {
   const response = await fetch("/api/sync", {
     method: "GET",
-    headers: {
-      Authorization: createSyncAuthHeader(),
-    },
+    credentials: "same-origin",
     cache: "no-store",
   });
   const payload: unknown = await response.json().catch(() => null);
@@ -1206,9 +1249,9 @@ async function writeCloudSyncData(data: MedTrackSyncData) {
   const response = await fetch("/api/sync", {
     method: "PUT",
     headers: {
-      Authorization: createSyncAuthHeader(),
       "Content-Type": "application/json",
     },
+    credentials: "same-origin",
     body: JSON.stringify({ data }),
     cache: "no-store",
   });
@@ -1226,6 +1269,79 @@ async function writeCloudSyncData(data: MedTrackSyncData) {
       isRecord(payload) && typeof payload.error === "string"
         ? payload.error
         : "Cloud save failed",
+    );
+  }
+
+  return {
+    configured: true as const,
+    savedAt:
+      isRecord(payload) && typeof payload.savedAt === "string"
+        ? payload.savedAt
+        : new Date().toISOString(),
+  };
+}
+
+function readLocalHealthData(now: Date) {
+  return normalizeHealthData(
+    readStoredJson(HEALTH_DATA_STORAGE_KEY),
+    createDefaultHealthData(now),
+  );
+}
+
+function writeLocalHealthData(data: HealthSyncData) {
+  writeStoredJson(HEALTH_DATA_STORAGE_KEY, data);
+}
+
+async function readCloudHealthData(localData: HealthSyncData) {
+  const response = await fetch("/api/health-sync", {
+    method: "GET",
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (response.status === 503) {
+    return { configured: false as const, data: localData };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "Health sync failed",
+    );
+  }
+
+  if (!isRecord(payload) || payload.configured !== true) {
+    return { configured: false as const, data: localData };
+  }
+
+  const cloudData = normalizeHealthData(payload.data, localData);
+  return {
+    configured: true as const,
+    data: mergeHealthData(cloudData, localData),
+  };
+}
+
+async function writeCloudHealthData(data: HealthSyncData) {
+  const response = await fetch("/api/health-sync", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ data }),
+    cache: "no-store",
+  });
+  const payload: unknown = await response.json().catch(() => null);
+
+  if (response.status === 503) {
+    return { configured: false as const, savedAt: "" };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : "Health save failed",
     );
   }
 
@@ -1620,35 +1736,6 @@ function writeStoredString(key: string, value: string) {
 function readStoredNumber(key: string) {
   const value = Number(readStoredString(key));
   return Number.isFinite(value) ? value : 0;
-}
-
-function readStoredAuth() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  try {
-    return window.localStorage.getItem(AUTH_STORAGE_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function writeStoredAuth(shouldStaySignedIn: boolean) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    if (shouldStaySignedIn) {
-      window.localStorage.setItem(AUTH_STORAGE_KEY, "true");
-      return;
-    }
-
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
-  } catch {
-    toast.error("Unable to update the sign-in state for this browser");
-  }
 }
 
 function formatLogDate(value: string) {
@@ -2176,16 +2263,50 @@ export default function MedTrackApp() {
   const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(
     DEFAULT_REMINDER_SETTINGS,
   );
+  const [healthData, setHealthData] = useState<HealthSyncData>(() =>
+    createDefaultHealthData(),
+  );
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
   >("unsupported");
   const [syncStatus, setSyncStatus] =
     useState<CloudSyncStatus>("loading");
   const [isCloudConfigured, setIsCloudConfigured] = useState(false);
+  const [isHealthCloudConfigured, setIsHealthCloudConfigured] = useState(false);
+  const [healthSyncStatus, setHealthSyncStatus] =
+    useState<CloudSyncStatus>("loading");
   const [lastCloudSyncAt, setLastCloudSyncAt] = useState("");
   const [syncMessage, setSyncMessage] = useState("Checking cloud database");
   const [isStorageReady, setIsStorageReady] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
+  const pageContentRef = useRef<HTMLElement>(null);
+
+  function handleTabChange(nextTab: TabId) {
+    const didChange = nextTab !== activeTab;
+    setActiveTab(nextTab);
+
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      if (!didChange) return;
+
+      const heading = pageContentRef.current?.querySelector<HTMLElement>("h1");
+      if (!heading) return;
+
+      const previousTabIndex = heading.getAttribute("tabindex");
+      heading.setAttribute("tabindex", "-1");
+      heading.focus({ preventScroll: true });
+
+      if (previousTabIndex === null) {
+        heading.addEventListener(
+          "blur",
+          () => heading.removeAttribute("tabindex"),
+          { once: true },
+        );
+      } else {
+        heading.setAttribute("tabindex", previousTabIndex);
+      }
+    });
+  }
 
   const careDayDate = useMemo(
     () => (careDayKey ? getDateFromKey(careDayKey) : null),
@@ -2204,36 +2325,64 @@ export default function MedTrackApp() {
 
       const now = new Date();
       const localData = createLocalSyncData(now);
+      const localHealthData = readLocalHealthData(now);
       let syncData = localData;
+      let nextHealthData = localHealthData;
       let nextSyncStatus: CloudSyncStatus = "not-configured";
-      let nextSyncMessage = "Database is not configured";
+      let nextSyncMessage = "Sign in to enable cloud sync";
       let nextIsCloudConfigured = false;
+      let hasSession = false;
+      let nextHealthCloudConfigured = false;
+      let nextHealthSyncStatus: CloudSyncStatus = "not-configured";
 
       try {
-        const cloudResult = await readCloudSyncData(localData, now);
-        syncData = cloudResult.data;
-        nextIsCloudConfigured = cloudResult.configured;
-        nextSyncStatus = cloudResult.configured ? "synced" : "not-configured";
-        nextSyncMessage = cloudResult.configured
-          ? "Cloud sync is active"
-          : "Database env variables are missing";
+        const authResponse = await fetch("/api/auth", {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        const authPayload: unknown = await authResponse.json().catch(() => null);
+        hasSession =
+          authResponse.ok &&
+          isRecord(authPayload) &&
+          authPayload.authenticated === true;
+
+        if (hasSession) {
+          const [cloudResult, healthResult] = await Promise.all([
+            readCloudSyncData(localData, now),
+            readCloudHealthData(localHealthData),
+          ]);
+          syncData = cloudResult.data;
+          nextHealthData = healthResult.data;
+          nextIsCloudConfigured = cloudResult.configured;
+          nextHealthCloudConfigured = healthResult.configured;
+          nextSyncStatus = cloudResult.configured ? "synced" : "not-configured";
+          nextHealthSyncStatus = healthResult.configured
+            ? "synced"
+            : "not-configured";
+          nextSyncMessage = cloudResult.configured
+            ? "Cloud sync is active"
+            : "Database env variables are missing";
+        }
       } catch (error) {
         nextSyncStatus = "error";
+        nextHealthSyncStatus = "error";
         nextSyncMessage =
-          error instanceof Error ? error.message : "Cloud sync failed";
+          error instanceof Error ? error.message : "Could not verify session";
       }
 
       if (isCancelled) {
         return;
       }
 
-      setIsAuthenticated(readStoredAuth());
+      setIsAuthenticated(hasSession);
       setMedications(syncData.medications);
       setLogs(syncData.logs);
       setDeletedLogIds(syncData.deletedLogIds);
       setCategories(syncData.categories);
       setRoutineCategories(syncData.routineCategories);
       setReminderSettings(syncData.reminderSettings);
+      setHealthData(nextHealthData);
       setNotificationPermission(
         typeof Notification === "undefined"
           ? "unsupported"
@@ -2242,10 +2391,13 @@ export default function MedTrackApp() {
       setToday(now);
       setCareDayKey(syncData.careDayKey);
       setIsCloudConfigured(nextIsCloudConfigured);
+      setIsHealthCloudConfigured(nextHealthCloudConfigured);
+      setHealthSyncStatus(nextHealthSyncStatus);
       setSyncStatus(nextSyncStatus);
       setSyncMessage(nextSyncMessage);
       setLastCloudSyncAt(nextIsCloudConfigured ? syncData.updatedAt : "");
       writeLocalSyncData(syncData);
+      writeLocalHealthData(nextHealthData);
       setIsStorageReady(true);
     }, 0);
 
@@ -2312,6 +2464,14 @@ export default function MedTrackApp() {
   }, [isStorageReady, reminderSettings]);
 
   useEffect(() => {
+    if (!isStorageReady) {
+      return;
+    }
+
+    writeLocalHealthData(healthData);
+  }, [healthData, isStorageReady]);
+
+  useEffect(() => {
     if (!isStorageReady || !isCloudConfigured || !isAuthenticated) {
       return;
     }
@@ -2368,6 +2528,30 @@ export default function MedTrackApp() {
   ]);
 
   useEffect(() => {
+    if (!isStorageReady || !isHealthCloudConfigured || !isAuthenticated) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      setHealthSyncStatus("saving");
+
+      try {
+        const result = await writeCloudHealthData(healthData);
+        if (!result.configured) {
+          setIsHealthCloudConfigured(false);
+          setHealthSyncStatus("not-configured");
+          return;
+        }
+        setHealthSyncStatus("synced");
+      } catch {
+        setHealthSyncStatus("error");
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [healthData, isAuthenticated, isHealthCloudConfigured, isStorageReady]);
+
+  useEffect(() => {
     if (!isStorageReady || !isCloudConfigured || !isAuthenticated) {
       return;
     }
@@ -2387,7 +2571,10 @@ export default function MedTrackApp() {
       };
 
       try {
-        const cloudResult = await readCloudSyncData(fallbackData, now);
+        const [cloudResult, healthResult] = await Promise.all([
+          readCloudSyncData(fallbackData, now),
+          readCloudHealthData(healthData),
+        ]);
 
         if (!cloudResult.configured) {
           setIsCloudConfigured(false);
@@ -2403,12 +2590,19 @@ export default function MedTrackApp() {
         setRoutineCategories(cloudResult.data.routineCategories);
         setCareDayKey(cloudResult.data.careDayKey);
         setReminderSettings(cloudResult.data.reminderSettings);
+        setHealthData(healthResult.data);
+        setIsHealthCloudConfigured(healthResult.configured);
+        setHealthSyncStatus(
+          healthResult.configured ? "synced" : "not-configured",
+        );
         setSyncStatus("synced");
         setSyncMessage("Cloud sync is active");
         setLastCloudSyncAt(cloudResult.data.updatedAt);
         writeLocalSyncData(cloudResult.data);
+        writeLocalHealthData(healthResult.data);
       } catch {
         setSyncStatus("error");
+        setHealthSyncStatus("error");
         setSyncMessage("Could not refresh cloud data");
       }
     }
@@ -2434,6 +2628,7 @@ export default function MedTrackApp() {
     careDayKey,
     categories,
     deletedLogIds,
+    healthData,
     isAuthenticated,
     isCloudConfigured,
     isStorageReady,
@@ -2634,23 +2829,309 @@ export default function MedTrackApp() {
     todayKey,
   ]);
 
-  function handleLogin(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (!isStorageReady || !today) return;
+
+    const dateKey = getTehranDateKey(today);
+    const currentTime = getTehranTime(today);
+    const settings = healthData.settings;
+    const hasWeight = healthData.weightEntries.some(
+      (entry) => getTehranDateKey(new Date(entry.measuredAt)) === dateKey,
+    );
+    const hasDiet = healthData.dietCheckIns.some(
+      (entry) => getTehranDateKey(new Date(entry.measuredAt)) === dateKey,
+    );
+    const hasBloodPressure = (period: "morning" | "evening") =>
+      healthData.bloodPressureSessions.some(
+        (session) =>
+          session.period === period &&
+          getTehranDateKey(new Date(session.measuredAt)) === dateKey,
+      );
+    const inBloodPressureCycle =
+      dateKey >= settings.bpCycleStartDate && dateKey <= settings.bpCycleEndDate;
+    const [currentHour = 0, currentMinute = 0] = currentTime
+      .split(":")
+      .map(Number);
+    const [morningHour = 0, morningMinute = 0] = settings.bpMorningReminderTime
+      .split(":")
+      .map(Number);
+    const currentMinutes = currentHour * 60 + currentMinute;
+    const morningReminderMinutes = morningHour * 60 + morningMinute;
+    const isWithinMorningWindow =
+      currentMinutes >= morningReminderMinutes &&
+      currentMinutes <= morningReminderMinutes + 60;
+    const reminders: { id: string; due: boolean; title: string; body: string }[] = [
+      {
+        id: "bp-safety-start",
+        due: healthData.bloodPressureSessions.length === 0,
+        title: "Blood pressure check needed today",
+        body: "Because you have felt it may be high, rest five minutes and record two upper-arm readings now.",
+      },
+      {
+        id: "weight",
+        due:
+          settings.weightReminderEnabled &&
+          !hasWeight &&
+          currentTime >= settings.weightReminderTime,
+        title: "Weight check due",
+        body: "Weigh after the bathroom and before food or drink, under similar conditions.",
+      },
+      {
+        id: "bp-morning",
+        due:
+          settings.bpReminderEnabled &&
+          inBloodPressureCycle &&
+          !hasBloodPressure("morning") &&
+          currentTime >= settings.bpMorningReminderTime,
+        title: isWithinMorningWindow
+          ? "Morning blood pressure due"
+          : "Morning blood pressure window missed",
+        body: isWithinMorningWindow
+          ? "Rest five minutes, then take two upper-arm readings at least one minute apart. Measure before medication only when that will not delay a scheduled dose; never delay or skip medication for a reading."
+          : "The planned morning window has passed. Take two rested readings when you can and record the actual time; never delay or skip medication for a reading.",
+      },
+      {
+        id: "bp-evening",
+        due:
+          settings.bpReminderEnabled &&
+          inBloodPressureCycle &&
+          !hasBloodPressure("evening") &&
+          currentTime >= settings.bpEveningReminderTime,
+        title: "Evening blood pressure due",
+        body: "Rest five minutes, then take two readings at least one minute apart.",
+      },
+      {
+        id: "diet",
+        due:
+          settings.dietReminderEnabled &&
+          !hasDiet &&
+          currentTime >= settings.dietReminderTime,
+        title: "Diet check-in due",
+        body: "Record how closely you followed your plan today.",
+      },
+    ];
+
+    reminders.filter((reminder) => reminder.due).forEach((reminder) => {
+      const notificationKey = `health:${dateKey}:${reminder.id}`;
+      if (notifiedReminderKeys.current.has(notificationKey)) return;
+      notifiedReminderKeys.current.add(notificationKey);
+      toast.info(`${reminder.title}: ${reminder.body}`, { duration: 10000 });
+
+      if (
+        settings.browserNotifications &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        new Notification("MedTrack health reminder", {
+          body: reminder.body,
+        });
+      }
+    });
+  }, [healthData, isStorageReady, today]);
+
+  function updateHealthData(
+    updater: (currentData: HealthSyncData, updatedAt: string) => HealthSyncData,
+  ) {
+    const updatedAt = new Date().toISOString();
+    setHealthData((currentData) => updater(currentData, updatedAt));
+  }
+
+  function handleAddWeight(entry: WeightEntry) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      weightEntries: [entry, ...currentData.weightEntries],
+      updatedAt,
+    }));
+    toast.success("Weight recorded");
+  }
+
+  function handleDeleteWeight(id: string) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      weightEntries: currentData.weightEntries.filter((entry) => entry.id !== id),
+      deletedEntryIds: {
+        ...currentData.deletedEntryIds,
+        weightEntryIds: Array.from(
+          new Set([...currentData.deletedEntryIds.weightEntryIds, id]),
+        ),
+      },
+      updatedAt,
+    }));
+    toast.success("Weight entry deleted");
+  }
+
+  function handleAddBloodPressure(session: BloodPressureSession) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      bloodPressureSessions: [session, ...currentData.bloodPressureSessions],
+      updatedAt,
+    }));
+    const severeReadingCount = session.readings.filter(
+      (reading) => reading.systolic >= 180 || reading.diastolic >= 120,
+    ).length;
+    if (severeReadingCount > 0 && session.emergencySymptoms.length > 0) {
+      toast.error("Severe blood pressure with emergency symptoms recorded. Call your local emergency service now.", {
+        duration: 15000,
+      });
+    } else if (severeReadingCount === session.readings.length) {
+      toast.error("Both readings are in the severe range. Contact a healthcare professional immediately; call emergency services if symptoms appear.", {
+        duration: 15000,
+      });
+    } else if (severeReadingCount === 1) {
+      toast.error("One of the two readings was severe. Follow the urgent guidance in Health and seek emergency help if symptoms appear.", {
+        duration: 15000,
+      });
+    } else {
+      toast.success("Blood pressure session recorded");
+    }
+  }
+
+  function handleDeleteBloodPressure(id: string) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      bloodPressureSessions: currentData.bloodPressureSessions.filter(
+        (session) => session.id !== id,
+      ),
+      deletedEntryIds: {
+        ...currentData.deletedEntryIds,
+        bloodPressureSessionIds: Array.from(
+          new Set([
+            ...currentData.deletedEntryIds.bloodPressureSessionIds,
+            id,
+          ]),
+        ),
+      },
+      updatedAt,
+    }));
+    toast.success("Blood pressure session deleted");
+  }
+
+  function handleAddDietCheckIn(checkIn: DietCheckIn) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      dietCheckIns: [checkIn, ...currentData.dietCheckIns],
+      updatedAt,
+    }));
+    toast.success("Diet check-in saved");
+  }
+
+  function handleDeleteDietCheckIn(id: string) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      dietCheckIns: currentData.dietCheckIns.filter((entry) => entry.id !== id),
+      deletedEntryIds: {
+        ...currentData.deletedEntryIds,
+        dietCheckInIds: Array.from(
+          new Set([...currentData.deletedEntryIds.dietCheckInIds, id]),
+        ),
+      },
+      updatedAt,
+    }));
+    toast.success("Diet check-in deleted");
+  }
+
+  async function handleUpdateHealthSettings(nextSettings: HealthSettings) {
+    let settings = nextSettings;
+    if (
+      settings.browserNotifications &&
+      typeof Notification !== "undefined" &&
+      Notification.permission !== "granted"
+    ) {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission !== "granted") {
+        settings = { ...settings, browserNotifications: false };
+        toast.error("Notifications are blocked; in-app reminders remain active");
+      }
+    }
+
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      settings,
+      settingsUpdatedAt: updatedAt,
+      updatedAt,
+    }));
+  }
+
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (username === LOGIN_USERNAME && password === LOGIN_PASSWORD) {
-      writeStoredAuth(true);
+    try {
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ username, password }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+
+      if (!response.ok || !isRecord(payload) || payload.authenticated !== true) {
+        toast.error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : "Invalid username or password",
+        );
+        return;
+      }
+
       setIsAuthenticated(true);
       setUsername("");
       setPassword("");
-      toast.success("Welcome back to MedTrack");
-      return;
-    }
+      setSyncStatus("loading");
+      setSyncMessage("Loading cloud database");
 
-    toast.error("Invalid username or password");
+      const now = new Date();
+      const localData = createLocalSyncData(now);
+      const localHealthData = readLocalHealthData(now);
+
+      try {
+        const [cloudResult, healthResult] = await Promise.all([
+          readCloudSyncData(localData, now),
+          readCloudHealthData(localHealthData),
+        ]);
+        setMedications(cloudResult.data.medications);
+        setLogs(cloudResult.data.logs);
+        setDeletedLogIds(cloudResult.data.deletedLogIds);
+        setCategories(cloudResult.data.categories);
+        setRoutineCategories(cloudResult.data.routineCategories);
+        setCareDayKey(cloudResult.data.careDayKey);
+        setReminderSettings(cloudResult.data.reminderSettings);
+        setHealthData(healthResult.data);
+        setIsCloudConfigured(cloudResult.configured);
+        setIsHealthCloudConfigured(healthResult.configured);
+        setHealthSyncStatus(
+          healthResult.configured ? "synced" : "not-configured",
+        );
+        setSyncStatus(cloudResult.configured ? "synced" : "not-configured");
+        setSyncMessage(
+          cloudResult.configured
+            ? "Cloud sync is active"
+            : "Database env variables are missing",
+        );
+        setLastCloudSyncAt(
+          cloudResult.configured ? cloudResult.data.updatedAt : "",
+        );
+        writeLocalSyncData(cloudResult.data);
+        writeLocalHealthData(healthResult.data);
+      } catch (error) {
+        setSyncStatus("error");
+        setHealthSyncStatus("error");
+        setSyncMessage(
+          error instanceof Error ? error.message : "Cloud sync failed",
+        );
+      }
+
+      toast.success("Welcome back to MedTrack");
+    } catch {
+      toast.error("Could not sign in. Check your connection and try again.");
+    }
   }
 
-  function handleLogout() {
-    writeStoredAuth(false);
+  async function handleLogout() {
+    await fetch("/api/auth", {
+      method: "DELETE",
+      credentials: "same-origin",
+    }).catch(() => null);
     setIsAuthenticated(false);
     setUsername("");
     setPassword("");
@@ -2664,10 +3145,32 @@ export default function MedTrackApp() {
       return;
     }
 
+    const actualTodayKey = getDateKey(today ?? new Date());
+
+    if (todayKey >= actualTodayKey) {
+      toast.error("Today is already the current care day");
+      return;
+    }
+
+    if (
+      pendingTodayCount > 0 &&
+      !window.confirm(
+        `End this care day with ${pendingTodayCount} pending item(s)? You can undo immediately after.`,
+      )
+    ) {
+      return;
+    }
+
+    const previousCareDayKey = todayKey;
     const nextCareDayKey = getNextCareDayKey(todayKey);
     setCareDayKey(nextCareDayKey);
     notifiedReminderKeys.current.clear();
-    toast.success(`Care day moved to ${format(parseISO(nextCareDayKey), "MMM d")}`);
+    toast.success(`Care day moved to ${format(parseISO(nextCareDayKey), "MMM d")}`, {
+      action: {
+        label: "Undo",
+        onClick: () => setCareDayKey(previousCareDayKey),
+      },
+    });
   }
 
   async function handleEnableNotifications() {
@@ -3092,7 +3595,7 @@ export default function MedTrackApp() {
         : "Medication added. Existing history was not changed.",
     );
     resetForm();
-    setActiveTab("medications");
+    handleTabChange("medications");
   }
 
   function handleEditMedication(medication: Medication) {
@@ -3111,7 +3614,7 @@ export default function MedTrackApp() {
       days: [...medication.schedule.days],
       notes: medication.notes,
     });
-    setActiveTab("add");
+    handleTabChange("add");
   }
 
   function handleDeleteMedication(medication: Medication) {
@@ -3388,9 +3891,9 @@ export default function MedTrackApp() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f5faf8] text-zinc-950">
+    <main className="min-h-[100dvh] bg-[#f5faf8] text-zinc-950">
       <div className="lg:grid lg:min-h-screen lg:grid-cols-[17rem_1fr]">
-        <aside className="border-b border-emerald-100 bg-white px-4 py-4 lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
+        <aside className="border-b border-emerald-100 bg-white px-4 py-3 lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
           <div className="flex items-center justify-between gap-4 lg:block">
             <div className="flex items-center gap-3">
               <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-600 text-white">
@@ -3405,7 +3908,7 @@ export default function MedTrackApp() {
             </div>
 
             <button
-              className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50 lg:mt-7 lg:w-full lg:justify-center"
+              className="hidden items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50 lg:mt-7 lg:flex lg:w-full lg:justify-center"
               type="button"
               onClick={handleLogout}
             >
@@ -3414,10 +3917,12 @@ export default function MedTrackApp() {
             </button>
           </div>
 
-          <nav className="mt-5 flex gap-2 overflow-x-auto pb-1 lg:mt-8 lg:block lg:space-y-2 lg:overflow-visible lg:pb-0">
+          <nav className="mt-8 hidden space-y-2 lg:block" aria-label="Main navigation">
             {TABS.map((tab) => {
               const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
+              const isActive =
+                activeTab === tab.id ||
+                (tab.id === "medications" && activeTab === "add");
 
               return (
                 <button
@@ -3428,7 +3933,8 @@ export default function MedTrackApp() {
                       : "text-zinc-600 hover:bg-emerald-50 hover:text-emerald-800"
                   }`}
                   type="button"
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabChange(tab.id)}
+                  aria-current={isActive ? "page" : undefined}
                 >
                   <Icon className="h-4 w-4" aria-hidden="true" />
                   {tab.label}
@@ -3437,15 +3943,20 @@ export default function MedTrackApp() {
             })}
           </nav>
 
-          <SyncStatusPanel
-            syncStatus={syncStatus}
-            syncMessage={syncMessage}
-            isCloudConfigured={isCloudConfigured}
-            lastCloudSyncAt={lastCloudSyncAt}
-          />
+          <div className="hidden lg:block">
+            <SyncStatusPanel
+              syncStatus={syncStatus}
+              syncMessage={syncMessage}
+              isCloudConfigured={isCloudConfigured}
+              lastCloudSyncAt={lastCloudSyncAt}
+            />
+          </div>
         </aside>
 
-        <section className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <section
+          ref={pageContentRef}
+          className="px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:py-8"
+        >
           {activeTab === "dashboard" && (
             <DashboardView
               activeMedicationCount={activeMedications.length}
@@ -3457,16 +3968,47 @@ export default function MedTrackApp() {
               currentClockLabel={currentClockLabel}
               adherenceStats={adherenceStats}
               reminderSettings={reminderSettings}
+              healthData={healthData}
+              now={today}
               categories={categories}
               routineCategories={routineCategories}
               onMarkAsTaken={handleMarkAsTaken}
               onUndoTaken={handleUndoTaken}
               onMarkGroupAsTaken={handleMarkGroupAsTaken}
               onUndoGroupTaken={handleUndoGroupTaken}
-              onAddMedication={() => setActiveTab("add")}
-              onOpenReports={() => setActiveTab("reports")}
+              onAddMedication={() => handleTabChange("add")}
+              onOpenReports={() => handleTabChange("reports")}
+              onOpenHealth={() => handleTabChange("health")}
               onEndCareDay={handleEndCareDay}
             />
+          )}
+
+          {activeTab === "health" && (
+            <>
+              {healthSyncStatus === "error" && (
+                <div
+                  className="mx-auto mb-4 max-w-7xl rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"
+                  role="status"
+                >
+                  Health data is saved on this device, but cloud health sync needs
+                  attention. It will retry when the app regains focus.
+                </div>
+              )}
+              <HealthTracker
+                weightEntries={healthData.weightEntries}
+                bloodPressureSessions={healthData.bloodPressureSessions}
+                dietCheckIns={healthData.dietCheckIns}
+                settings={healthData.settings}
+                now={today}
+                onAddWeight={handleAddWeight}
+                onDeleteWeight={handleDeleteWeight}
+                onAddBloodPressure={handleAddBloodPressure}
+                onDeleteBloodPressure={handleDeleteBloodPressure}
+                onAddDiet={handleAddDietCheckIn}
+                onDeleteDiet={handleDeleteDietCheckIn}
+                onUpdateSettings={handleUpdateHealthSettings}
+              />
+            </>
           )}
 
           {activeTab === "reports" && (
@@ -3486,7 +4028,7 @@ export default function MedTrackApp() {
               routineCategories={routineCategories}
               onEdit={handleEditMedication}
               onDelete={handleDeleteMedication}
-              onAddMedication={() => setActiveTab("add")}
+              onAddMedication={() => handleTabChange("add")}
             />
           )}
 
@@ -3503,7 +4045,7 @@ export default function MedTrackApp() {
               onDayToggle={handleDayToggle}
               onCancelEdit={() => {
                 resetForm();
-                setActiveTab("medications");
+                handleTabChange("medications");
               }}
             />
           )}
@@ -3544,9 +4086,310 @@ export default function MedTrackApp() {
               onImportStarterPlan={handleImportStarterPlan}
             />
           )}
+
+          {activeTab === "more" && (
+            <MoreView
+              onNavigate={handleTabChange}
+              onEndCareDay={handleEndCareDay}
+              onLogout={handleLogout}
+              syncStatus={syncStatus}
+              syncMessage={syncMessage}
+              isCloudConfigured={isCloudConfigured}
+              lastCloudSyncAt={lastCloudSyncAt}
+            />
+          )}
         </section>
       </div>
+
+      <MobileNavigation activeTab={activeTab} onChange={handleTabChange} />
     </main>
+  );
+}
+
+function MobileNavigation({
+  activeTab,
+  onChange,
+}: {
+  activeTab: TabId;
+  onChange: (tab: TabId) => void;
+}) {
+  const moreTabs: TabId[] = ["more", "history", "settings", "add"];
+
+  return (
+    <nav
+      className="safe-area-bottom fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white/95 px-2 pt-2 shadow-[0_-8px_24px_rgba(24,31,28,0.08)] backdrop-blur lg:hidden"
+      aria-label="Mobile navigation"
+    >
+      <div className="mx-auto grid max-w-lg grid-cols-5 gap-1">
+        {MOBILE_TABS.map((tab) => {
+          const Icon = tab.icon;
+          const isActive =
+            tab.id === "more"
+              ? moreTabs.includes(activeTab)
+              : activeTab === tab.id;
+
+          return (
+            <button
+              key={tab.id}
+              className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-[11px] font-semibold transition ${
+                isActive
+                  ? "bg-emerald-50 text-emerald-800"
+                  : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800"
+              }`}
+              type="button"
+              onClick={() => onChange(tab.id)}
+              aria-current={isActive ? "page" : undefined}
+            >
+              <Icon className="h-5 w-5" aria-hidden="true" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+function DashboardHealthCard({
+  healthData,
+  now,
+  onOpenHealth,
+}: {
+  healthData: HealthSyncData;
+  now: Date;
+  onOpenHealth: () => void;
+}) {
+  const todayKey = getTehranDateKey(now);
+  const time = getTehranTime(now);
+  const latestWeight = [...healthData.weightEntries].sort(
+    (first, second) =>
+      Date.parse(second.measuredAt) - Date.parse(first.measuredAt),
+  )[0];
+  const latestBloodPressure = [...healthData.bloodPressureSessions].sort(
+    (first, second) =>
+      Date.parse(second.measuredAt) - Date.parse(first.measuredAt),
+  )[0];
+  const hasWeightToday = healthData.weightEntries.some(
+    (entry) => getTehranDateKey(new Date(entry.measuredAt)) === todayKey,
+  );
+  const hasMorningBloodPressure = healthData.bloodPressureSessions.some(
+    (session) =>
+      session.period === "morning" &&
+      getTehranDateKey(new Date(session.measuredAt)) === todayKey,
+  );
+  const hasEveningBloodPressure = healthData.bloodPressureSessions.some(
+    (session) =>
+      session.period === "evening" &&
+      getTehranDateKey(new Date(session.measuredAt)) === todayKey,
+  );
+  const hasDietToday = healthData.dietCheckIns.some(
+    (entry) => getTehranDateKey(new Date(entry.measuredAt)) === todayKey,
+  );
+  const settings = healthData.settings;
+  const inCycle =
+    todayKey >= settings.bpCycleStartDate && todayKey <= settings.bpCycleEndDate;
+  const tasks = [
+    settings.weightReminderEnabled &&
+    !hasWeightToday &&
+    time >= settings.weightReminderTime
+      ? "Weight due"
+      : null,
+    settings.bpReminderEnabled &&
+    inCycle &&
+    !hasMorningBloodPressure &&
+    time >= settings.bpMorningReminderTime
+      ? "Morning BP due"
+      : null,
+    settings.bpReminderEnabled &&
+    inCycle &&
+    !hasEveningBloodPressure &&
+    time >= settings.bpEveningReminderTime
+      ? "Evening BP due"
+      : null,
+    settings.dietReminderEnabled &&
+    !hasDietToday &&
+    time >= settings.dietReminderTime
+      ? "Diet due"
+      : null,
+  ].filter((task): task is string => Boolean(task));
+  const average = latestBloodPressure
+    ? {
+        systolic: Math.round(
+          (latestBloodPressure.readings[0].systolic +
+            latestBloodPressure.readings[1].systolic) /
+            2,
+        ),
+        diastolic: Math.round(
+          (latestBloodPressure.readings[0].diastolic +
+            latestBloodPressure.readings[1].diastolic) /
+            2,
+        ),
+      }
+    : null;
+  const latestBloodPressureTime = latestBloodPressure
+    ? Date.parse(latestBloodPressure.measuredAt)
+    : Number.NaN;
+  const latestBloodPressureAge = now.getTime() - latestBloodPressureTime;
+  const latestBloodPressureIsCurrent = Boolean(
+    latestBloodPressure &&
+      (getTehranDateKey(new Date(latestBloodPressure.measuredAt)) === todayKey ||
+        (latestBloodPressureAge >= 0 &&
+          latestBloodPressureAge <= 6 * 60 * 60 * 1000)),
+  );
+  const severe = Boolean(
+    latestBloodPressureIsCurrent &&
+      latestBloodPressure?.readings.some(
+        (reading) => reading.systolic >= 180 || reading.diastolic >= 120,
+      ),
+  );
+
+  return (
+    <button
+      className={`mb-3 w-full rounded-lg border p-4 text-left shadow-sm transition hover:shadow-md ${
+        severe
+          ? "border-rose-300 bg-rose-50"
+          : "border-sky-200 bg-gradient-to-br from-white to-sky-50"
+      }`}
+      type="button"
+      onClick={onOpenHealth}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <HeartPulse
+              className={`h-5 w-5 ${severe ? "text-rose-700" : "text-sky-700"}`}
+              aria-hidden="true"
+            />
+            <h2 className="font-semibold text-zinc-950">
+              {severe ? "Urgent health review" : "Health check-in"}
+            </h2>
+          </div>
+          <p className="mt-1 text-sm text-zinc-600">
+            {tasks.length > 0 ? tasks.join(" · ") : "No health checks due now"}
+          </p>
+        </div>
+        <span className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-sky-800 shadow-sm">
+          Open
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+        <div className="rounded-md bg-white/80 p-2.5">
+          <span className="text-xs text-zinc-500">Latest weight</span>
+          <strong className="mt-0.5 block text-zinc-950">
+            {latestWeight ? `${latestWeight.weightKg.toFixed(1)} kg` : "Not recorded"}
+          </strong>
+        </div>
+        <div className="rounded-md bg-white/80 p-2.5">
+          <span className="text-xs text-zinc-500">Latest BP average</span>
+          <strong className="mt-0.5 block text-zinc-950">
+            {average ? `${average.systolic}/${average.diastolic}` : "Record now"}
+          </strong>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function MoreView({
+  onNavigate,
+  onEndCareDay,
+  onLogout,
+  syncStatus,
+  syncMessage,
+  isCloudConfigured,
+  lastCloudSyncAt,
+}: {
+  onNavigate: (tab: TabId) => void;
+  onEndCareDay: () => void;
+  onLogout: () => void;
+  syncStatus: CloudSyncStatus;
+  syncMessage: string;
+  isCloudConfigured: boolean;
+  lastCloudSyncAt: string;
+}) {
+  const actions: {
+    tab: TabId;
+    label: string;
+    description: string;
+    icon: typeof Activity;
+  }[] = [
+    {
+      tab: "add",
+      label: "Add medication",
+      description: "Create a medication or care item",
+      icon: Plus,
+    },
+    {
+      tab: "history",
+      label: "History",
+      description: "Review and backfill care logs",
+      icon: History,
+    },
+    {
+      tab: "settings",
+      label: "Settings",
+      description: "Reminders, categories, and routines",
+      icon: Settings,
+    },
+  ];
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHeader title="More" description="History, settings, sync, and account" />
+
+      <section className="grid gap-3 sm:grid-cols-3">
+        {actions.map((action) => {
+          const Icon = action.icon;
+
+          return (
+            <button
+              key={action.tab}
+              className="flex min-h-20 items-center gap-3 rounded-lg border border-zinc-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
+              type="button"
+              onClick={() => onNavigate(action.tab)}
+            >
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-800">
+                <Icon className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <span>
+                <span className="block text-sm font-semibold text-zinc-950">
+                  {action.label}
+                </span>
+                <span className="mt-0.5 block text-xs leading-5 text-zinc-500">
+                  {action.description}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </section>
+
+      <SyncStatusPanel
+        syncStatus={syncStatus}
+        syncMessage={syncMessage}
+        isCloudConfigured={isCloudConfigured}
+        lastCloudSyncAt={lastCloudSyncAt}
+      />
+
+      <section className="mt-5 space-y-3 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+        <button
+          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+          type="button"
+          onClick={onEndCareDay}
+        >
+          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+          End previous care day
+        </button>
+        <button
+          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
+          type="button"
+          onClick={onLogout}
+        >
+          <LogOut className="h-4 w-4" aria-hidden="true" />
+          Log out
+        </button>
+      </section>
+    </div>
   );
 }
 
@@ -3560,6 +4403,8 @@ function DashboardView({
   currentClockLabel,
   adherenceStats,
   reminderSettings,
+  healthData,
+  now,
   categories,
   routineCategories,
   onMarkAsTaken,
@@ -3568,6 +4413,7 @@ function DashboardView({
   onUndoGroupTaken,
   onAddMedication,
   onOpenReports,
+  onOpenHealth,
   onEndCareDay,
 }: {
   activeMedicationCount: number;
@@ -3579,6 +4425,8 @@ function DashboardView({
   currentClockLabel: string;
   adherenceStats: AdherenceStats;
   reminderSettings: ReminderSettings;
+  healthData: HealthSyncData;
+  now: Date;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
@@ -3587,6 +4435,7 @@ function DashboardView({
   onUndoGroupTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
   onOpenReports: () => void;
+  onOpenHealth: () => void;
   onEndCareDay: () => void;
 }) {
   const timedMedications = todayMedications.filter(
@@ -3654,7 +4503,7 @@ function DashboardView({
         title="Today"
         description="Your daily care checklist"
         action={
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="hidden gap-2 lg:flex">
             <button
               className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50"
               type="button"
@@ -3675,10 +4524,16 @@ function DashboardView({
         }
       />
 
-      <section className="mb-4 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+      <DashboardHealthCard
+        healthData={healthData}
+        now={now}
+        onOpenHealth={onOpenHealth}
+      />
+
+      <section className="mb-4 hidden rounded-lg border border-emerald-100 bg-white p-5 shadow-sm sm:block">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-xl font-semibold text-white">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-base font-semibold text-white sm:h-16 sm:w-16 sm:text-xl">
               {completionRate}%
             </div>
             <div>
@@ -3690,7 +4545,7 @@ function DashboardView({
                   Care day
                 </span>
               </div>
-              <p className="mt-1 max-w-2xl text-sm text-zinc-500">
+              <p className="mt-1 hidden max-w-2xl text-sm text-zinc-500 sm:block">
                 Current clock: {currentClockLabel}. This care day stays open
                 past midnight and rolls over automatically after noon tomorrow,
                 unless you end it manually.
@@ -3706,7 +4561,7 @@ function DashboardView({
         </div>
       </section>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         <StatTile
           icon={CalendarDays}
           label="Due today"
@@ -4130,7 +4985,7 @@ function MedicationDoseCard({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h3
-            className={`font-semibold ${
+            className={`min-w-0 break-words font-semibold ${
               entry.isTaken ? "text-emerald-950" : "text-zinc-950"
             }`}
           >
@@ -4146,9 +5001,12 @@ function MedicationDoseCard({
           {getEntryScheduleLabel(entry, routineCategories)}
         </p>
         {entry.medication.notes && (
-          <p className="mt-1 text-sm leading-5 text-zinc-500">
-            {entry.medication.notes}
-          </p>
+          <details className="mt-2 text-sm text-zinc-500">
+            <summary className="cursor-pointer font-medium text-emerald-800">
+              Details
+            </summary>
+            <p className="mt-1 leading-5">{entry.medication.notes}</p>
+          </details>
         )}
       </div>
 
@@ -4164,7 +5022,7 @@ function MedicationDoseCard({
           {entry.isTaken ? "Taken" : "Pending"}
         </span>
         <button
-          className={`inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-semibold transition ${
+          className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-semibold transition ${
             entry.isTaken
               ? "border border-zinc-200 bg-white text-zinc-700 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
               : "border border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700"
@@ -5344,7 +6202,14 @@ function ReportsView({
     () =>
       [...dayDetails]
         .reverse()
-        .map(({ entries: _entries, weekdayLabel: _weekdayLabel, ...point }) => point),
+        .map(({ dateKey, label, shortLabel, due, taken, rate }) => ({
+          dateKey,
+          label,
+          shortLabel,
+          due,
+          taken,
+          rate,
+        })),
     [dayDetails],
   );
 
@@ -5362,15 +6227,6 @@ function ReportsView({
     itemReports.find((item) => item.medicationId === selectedItemId) ??
     itemReports[0] ??
     null;
-
-  useEffect(() => {
-    if (
-      selectedItemId &&
-      !itemReports.some((item) => item.medicationId === selectedItemId)
-    ) {
-      setSelectedItemId(null);
-    }
-  }, [itemReports, selectedItemId]);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -6103,16 +6959,16 @@ function StatTile({
   };
 
   return (
-    <article className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-4">
+    <article className="rounded-lg border border-zinc-200 bg-white p-3 shadow-sm sm:p-4">
+      <div className="flex items-center justify-between gap-2 sm:gap-4">
         <div>
-          <p className="text-sm font-medium text-zinc-500">{label}</p>
-          <p className="mt-2 text-3xl font-semibold tracking-normal text-zinc-950">
+          <p className="text-xs font-medium text-zinc-500 sm:text-sm">{label}</p>
+          <p className="mt-1 text-2xl font-semibold tracking-normal text-zinc-950 sm:mt-2 sm:text-3xl">
             {value}
           </p>
         </div>
         <div
-          className={`flex h-11 w-11 items-center justify-center rounded-lg ${toneClasses[tone]}`}
+          className={`hidden h-11 w-11 items-center justify-center rounded-lg sm:flex ${toneClasses[tone]}`}
         >
           <Icon className="h-5 w-5" aria-hidden="true" />
         </div>

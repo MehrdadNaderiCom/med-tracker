@@ -1,7 +1,8 @@
 # MedTrack
 
-Personal medication and care routine tracker built with Next.js App Router,
-TypeScript, Tailwind CSS, lucide-react, sonner, and date-fns.
+Personal medication, care routine, weight, blood-pressure, and diet-adherence
+tracker built with Next.js App Router, TypeScript, Tailwind CSS, lucide-react,
+sonner, and date-fns.
 
 ## Development
 
@@ -14,6 +15,10 @@ npm run dev
 MedTrack keeps a localStorage fallback, but cross-device sync requires a shared
 database. The app includes `/api/sync`, which stores the whole personal dataset
 in Upstash Redis or Vercel KV through the REST API.
+
+Health measurements use `/api/health-sync` and a separate Redis key. Records are
+merged by immutable ID with deletion tombstones so an older medication client
+cannot erase weight or blood-pressure history.
 
 Set these environment variables on Vercel:
 
@@ -35,7 +40,14 @@ Optional overrides:
 MEDTRACK_SYNC_USERNAME=...
 MEDTRACK_SYNC_PASSWORD=...
 MEDTRACK_SYNC_KEY=medtrack:mehrdad:primary
+MEDTRACK_HEALTH_SYNC_KEY=medtrack:mehrdad:health:v1
+MEDTRACK_AUTH_CREDENTIAL_KEY=medtrack:mehrdad:auth:v1
+MEDTRACK_SESSION_SECRET=...
 ```
 
 Without the Redis/KV variables, the app remains local-only and shows a "Local
 only" sync status in the sidebar.
+
+Authentication uses a signed, 30-day, HttpOnly session cookie. Browser health
+reminders are an additional channel only: they require permission and the app to
+be open; persistent in-app alerts remain the source of truth.

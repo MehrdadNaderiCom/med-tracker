@@ -1,12 +1,64 @@
 import { NextResponse } from "next/server";
+import { hasValidSession, isTrustedSessionOrigin } from "@/app/lib/session";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SYNC_USERNAME =
-  process.env.MEDTRACK_SYNC_USERNAME ?? "mail@mehrdadnaderi.com";
-const SYNC_PASSWORD = process.env.MEDTRACK_SYNC_PASSWORD ?? "Naderi$2050";
 const SYNC_KEY = process.env.MEDTRACK_SYNC_KEY ?? "medtrack:mehrdad:primary";
+const MAX_SYNC_BODY_BYTES = 4 * 1024 * 1024;
+
+function json(data: unknown, init?: ResponseInit) {
+  const response = NextResponse.json(data, init);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function declaredBodyIsTooLarge(request: Request) {
+  const header = request.headers.get("content-length");
+
+  if (!header) {
+    return false;
+  }
+
+  const contentLength = Number(header);
+  return Number.isFinite(contentLength) && contentLength > MAX_SYNC_BODY_BYTES;
+}
+
+async function readBodyWithinLimit(request: Request) {
+  if (!request.body) {
+    return { tooLarge: false as const, text: "" };
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    totalBytes += value.byteLength;
+
+    if (totalBytes > MAX_SYNC_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return { tooLarge: true as const, text: "" };
+    }
+
+    chunks.push(value);
+  }
+
+  return {
+    tooLarge: false as const,
+    text: Buffer.concat(chunks).toString("utf8"),
+  };
+}
 
 function getRedisConfig() {
   const url =
@@ -22,15 +74,6 @@ function getRedisConfig() {
     token,
     url: url.replace(/\/$/, ""),
   };
-}
-
-function isAuthorized(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  const expectedAuth = `Basic ${Buffer.from(
-    `${SYNC_USERNAME}:${SYNC_PASSWORD}`,
-  ).toString("base64")}`;
-
-  return authHeader === expectedAuth;
 }
 
 async function redisCommand(command: unknown[]) {
@@ -74,15 +117,15 @@ async function redisCommand(command: unknown[]) {
   };
 }
 
-export async function GET(request: Request) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+export async function GET() {
+  if (!(await hasValidSession())) {
+    return json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const result = await redisCommand(["GET", SYNC_KEY]);
 
   if (!result.configured) {
-    return NextResponse.json(
+    return json(
       {
         configured: false,
         data: null,
@@ -93,23 +136,23 @@ export async function GET(request: Request) {
   }
 
   if ("error" in result) {
-    return NextResponse.json(
+    return json(
       { configured: true, data: null, error: result.error },
       { status: 502 },
     );
   }
 
   if (typeof result.result !== "string") {
-    return NextResponse.json({ configured: true, data: null });
+    return json({ configured: true, data: null });
   }
 
   try {
-    return NextResponse.json({
+    return json({
       configured: true,
       data: JSON.parse(result.result),
     });
   } catch {
-    return NextResponse.json(
+    return json(
       { configured: true, data: null, error: "Stored data is invalid" },
       { status: 502 },
     );
@@ -117,25 +160,43 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!(await hasValidSession()) || !isTrustedSessionOrigin(request)) {
+    return json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body: unknown = await request.json().catch(() => null);
+  if (declaredBodyIsTooLarge(request)) {
+    return json({ error: "Request payload is too large" }, { status: 413 });
+  }
 
-  if (!body || typeof body !== "object" || !("data" in body)) {
-    return NextResponse.json({ error: "Invalid sync payload" }, { status: 400 });
+  const bodyResult = await readBodyWithinLimit(request);
+
+  if (bodyResult.tooLarge) {
+    return json({ error: "Request payload is too large" }, { status: 413 });
+  }
+
+  const rawBody = bodyResult.text;
+
+  let body: unknown;
+
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return json({ error: "Invalid sync payload" }, { status: 400 });
+  }
+
+  if (!isRecord(body) || !isRecord(body.data)) {
+    return json({ error: "Invalid sync payload" }, { status: 400 });
   }
 
   const savedAt = new Date().toISOString();
   const result = await redisCommand([
     "SET",
     SYNC_KEY,
-    JSON.stringify({ ...(body.data as object), updatedAt: savedAt }),
+    JSON.stringify({ ...body.data, updatedAt: savedAt }),
   ]);
 
   if (!result.configured) {
-    return NextResponse.json(
+    return json(
       {
         configured: false,
         error: "Database is not configured",
@@ -145,11 +206,11 @@ export async function PUT(request: Request) {
   }
 
   if ("error" in result) {
-    return NextResponse.json(
+    return json(
       { configured: true, error: result.error },
       { status: 502 },
     );
   }
 
-  return NextResponse.json({ configured: true, savedAt });
+  return json({ configured: true, savedAt });
 }

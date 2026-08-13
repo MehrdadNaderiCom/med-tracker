@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "MedTrack",
     short_name: "MedTrack",
-    description: "A personal medication tracking app.",
+    description: "Personal medication, weight, blood pressure, and care tracking.",
     start_url: "/",
     scope: "/",
     display: "standalone",

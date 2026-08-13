@@ -1,0 +1,2443 @@
+"use client";
+
+import {
+  Activity,
+  AlertTriangle,
+  BellRing,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  HeartPulse,
+  Info,
+  Plus,
+  Salad,
+  Scale,
+  Settings2,
+  ShieldAlert,
+  Trash2,
+  TrendingDown,
+} from "lucide-react";
+import type { FormEvent, ReactNode } from "react";
+import { useMemo, useState } from "react";
+import type {
+  BloodPressureEmergencySymptom,
+  BloodPressurePeriod,
+  BloodPressureReading,
+  BloodPressureSession,
+  DietAdherence,
+  DietCheckIn,
+  HealthSettings,
+  WeightEntry,
+} from "@/types/health";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const HEALTH_TIME_ZONE = "Asia/Tehran";
+const SAFE_WEEKLY_LOSS_MIN_KG = 0.45;
+const SAFE_WEEKLY_LOSS_MAX_KG = 0.91;
+const URGENT_READING_WINDOW_MS = 60 * MINUTE_MS;
+const RECENT_SESSION_WINDOW_MS = 12 * 60 * MINUTE_MS;
+const MORNING_BP_WINDOW_END_HOUR = 14;
+
+const INPUT_CLASS =
+  "w-full min-w-0 rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-base text-zinc-950 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:bg-zinc-100 sm:text-sm";
+const LABEL_CLASS = "mb-1.5 block text-sm font-medium text-zinc-700";
+const CARD_CLASS =
+  "rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5";
+const PRIMARY_BUTTON_CLASS =
+  "inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-200 disabled:cursor-not-allowed disabled:bg-zinc-300 sm:w-auto";
+
+const EMERGENCY_SYMPTOMS: {
+  id: BloodPressureEmergencySymptom;
+  label: string;
+}[] = [
+  { id: "chest-pain", label: "Chest pain" },
+  { id: "shortness-of-breath", label: "Severe or unexplained shortness of breath" },
+  { id: "back-pain", label: "Back pain" },
+  { id: "numbness", label: "Sudden numbness" },
+  { id: "weakness", label: "Sudden weakness" },
+  { id: "vision-change", label: "Sudden vision change" },
+  { id: "difficulty-speaking", label: "Sudden difficulty speaking" },
+];
+
+type MaybePromise = void | Promise<void>;
+
+export interface HealthTrackerProps {
+  weightEntries: WeightEntry[];
+  bloodPressureSessions: BloodPressureSession[];
+  dietCheckIns: DietCheckIn[];
+  settings: HealthSettings;
+  now: Date;
+  onAddWeight: (entry: WeightEntry) => MaybePromise;
+  onDeleteWeight: (entryId: string) => MaybePromise;
+  onAddBloodPressure: (session: BloodPressureSession) => MaybePromise;
+  onDeleteBloodPressure: (sessionId: string) => MaybePromise;
+  onAddDiet: (checkIn: DietCheckIn) => MaybePromise;
+  onDeleteDiet: (checkInId: string) => MaybePromise;
+  onUpdateSettings: (settings: HealthSettings) => MaybePromise;
+}
+
+type BpCategory =
+  | "normal"
+  | "elevated"
+  | "stage-1"
+  | "stage-2"
+  | "severe";
+
+type BpAverage = {
+  systolic: number;
+  diastolic: number;
+  pulseBpm: number | null;
+};
+
+type DueAction = {
+  id: string;
+  label: string;
+  detail: string;
+  done: boolean;
+  dueNow: boolean;
+  windowPassed?: boolean;
+  href: string;
+};
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function parseNumber(value: string) {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function localDateKey(value: Date | string) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: HEALTH_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function toDateTimeLocal(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: HEALTH_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
+}
+
+function tehranOffsetMinutes(date: Date) {
+  const zoneName = new Intl.DateTimeFormat("en-US", {
+    timeZone: HEALTH_TIME_ZONE,
+    timeZoneName: "longOffset",
+  })
+    .formatToParts(date)
+    .find((part) => part.type === "timeZoneName")?.value;
+  const match = /^GMT([+-])(\d{2}):(\d{2})$/.exec(zoneName ?? "");
+  if (!match) return 210;
+  const minutes = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === "-" ? -minutes : minutes;
+}
+
+function toIsoTimestamp(localValue: string) {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(localValue);
+  if (!match) return null;
+  const wallClockUtc = Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+  );
+  const approximateDate = new Date(wallClockUtc);
+  const date = new Date(
+    wallClockUtc - tehranOffsetMinutes(approximateDate) * MINUTE_MS,
+  );
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Invalid date";
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: HEALTH_TIME_ZONE,
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatShortDate(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (!Number.isFinite(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: HEALTH_TIME_ZONE,
+    month: "short",
+    day: "numeric",
+  }).format(date);
+}
+
+function makeId(prefix: string) {
+  const suffix = globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : "The change could not be saved.";
+}
+
+function isFutureTimestamp(value: string, now: Date) {
+  const date = new Date(value);
+  return date.getTime() > now.getTime() + 10 * MINUTE_MS;
+}
+
+function isMeasurementWithin(value: string, now: Date, windowMs: number) {
+  const timestamp = new Date(value).getTime();
+  const age = now.getTime() - timestamp;
+  return Number.isFinite(timestamp) && age >= -10 * MINUTE_MS && age <= windowMs;
+}
+
+function parseDateOnly(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function inclusiveCalendarDays(start: string, end: string) {
+  const startDate = parseDateOnly(start);
+  const endDate = parseDateOnly(end);
+  if (!startDate || !endDate) return null;
+  const startUtc = Date.UTC(
+    startDate.getFullYear(),
+    startDate.getMonth(),
+    startDate.getDate(),
+  );
+  const endUtc = Date.UTC(
+    endDate.getFullYear(),
+    endDate.getMonth(),
+    endDate.getDate(),
+  );
+  return Math.round((endUtc - startUtc) / DAY_MS) + 1;
+}
+
+function timeHasPassed(now: Date, time: string) {
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) return true;
+  const scheduledMinutes = Number(match[1]) * 60 + Number(match[2]);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: HEALTH_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Number(values.hour) * 60 + Number(values.minute) >= scheduledMinutes;
+}
+
+function tehranHour(now: Date) {
+  const part = new Intl.DateTimeFormat("en-GB", {
+    timeZone: HEALTH_TIME_ZONE,
+    hour: "2-digit",
+    hourCycle: "h23",
+  })
+    .formatToParts(now)
+    .find((item) => item.type === "hour")?.value;
+  return Number(part ?? 0);
+}
+
+function isInCycle(dateKey: string, settings: HealthSettings) {
+  return (
+    Boolean(settings.bpCycleStartDate) &&
+    Boolean(settings.bpCycleEndDate) &&
+    dateKey >= settings.bpCycleStartDate &&
+    dateKey <= settings.bpCycleEndDate
+  );
+}
+
+function sessionAverage(session: BloodPressureSession): BpAverage {
+  const [first, second] = session.readings;
+  const pulses = [first.pulseBpm, second.pulseBpm].filter(
+    (pulse): pulse is number => typeof pulse === "number",
+  );
+  return {
+    systolic: (first.systolic + second.systolic) / 2,
+    diastolic: (first.diastolic + second.diastolic) / 2,
+    pulseBpm:
+      pulses.length > 0
+        ? pulses.reduce((total, pulse) => total + pulse, 0) / pulses.length
+        : null,
+  };
+}
+
+function isSevereReading(reading: BloodPressureReading) {
+  return reading.systolic >= 180 || reading.diastolic >= 120;
+}
+
+function isExtremeGuardrailReading(reading: BloodPressureReading) {
+  return (
+    reading.systolic < 60 ||
+    reading.systolic > 260 ||
+    reading.diastolic < 35 ||
+    reading.diastolic > 160 ||
+    (typeof reading.pulseBpm === "number" &&
+      (reading.pulseBpm < 30 || reading.pulseBpm > 220))
+  );
+}
+
+function hasIndependentEmergencySymptom(
+  symptoms: readonly BloodPressureEmergencySymptom[],
+) {
+  return symptoms.some((symptom) => symptom !== "back-pain");
+}
+
+function bpCategory(systolic: number, diastolic: number): BpCategory {
+  if (systolic >= 180 || diastolic >= 120) return "severe";
+  if (systolic >= 140 || diastolic >= 90) return "stage-2";
+  if (systolic >= 130 || diastolic >= 80) return "stage-1";
+  if (systolic >= 120 && diastolic < 80) return "elevated";
+  return "normal";
+}
+
+function categoryLabel(category: BpCategory) {
+  switch (category) {
+    case "normal":
+      return "Normal range";
+    case "elevated":
+      return "Elevated range";
+    case "stage-1":
+      return "Stage 1 range";
+    case "stage-2":
+      return "Stage 2 range";
+    case "severe":
+      return "Severe range";
+  }
+}
+
+function categoryClass(category: BpCategory) {
+  switch (category) {
+    case "normal":
+      return "border-emerald-200 bg-emerald-50 text-emerald-800";
+    case "elevated":
+      return "border-amber-200 bg-amber-50 text-amber-800";
+    case "stage-1":
+      return "border-orange-200 bg-orange-50 text-orange-800";
+    case "stage-2":
+      return "border-rose-200 bg-rose-50 text-rose-800";
+    case "severe":
+      return "border-red-300 bg-red-100 text-red-900";
+  }
+}
+
+function sortByMeasuredAt<T extends { measuredAt: string }>(entries: T[]) {
+  return [...entries].sort(
+    (left, right) =>
+      new Date(left.measuredAt).getTime() - new Date(right.measuredAt).getTime(),
+  );
+}
+
+function rollingWeightTrend(entries: WeightEntry[]) {
+  const sorted = sortByMeasuredAt(entries);
+  return sorted.map((entry) => {
+    const timestamp = new Date(entry.measuredAt).getTime();
+    const windowEntries = sorted.filter((candidate) => {
+      const candidateTime = new Date(candidate.measuredAt).getTime();
+      return candidateTime <= timestamp && candidateTime > timestamp - 7 * DAY_MS;
+    });
+    return {
+      measuredAt: entry.measuredAt,
+      raw: entry.weightKg,
+      trend:
+        windowEntries.reduce((total, candidate) => total + candidate.weightKg, 0) /
+        windowEntries.length,
+    };
+  });
+}
+
+function recentWeightPace(entries: WeightEntry[]) {
+  const sorted = sortByMeasuredAt(entries);
+  const latest = sorted.at(-1);
+  if (!latest) return null;
+  const anchor = new Date(latest.measuredAt).getTime();
+  const recent = sorted.filter((entry) => {
+    const value = new Date(entry.measuredAt).getTime();
+    return value <= anchor && value > anchor - 7 * DAY_MS;
+  });
+  const previous = sorted.filter((entry) => {
+    const value = new Date(entry.measuredAt).getTime();
+    return value <= anchor - 7 * DAY_MS && value > anchor - 14 * DAY_MS;
+  });
+  const distinctDays = (items: WeightEntry[]) =>
+    new Set(items.map((entry) => localDateKey(entry.measuredAt))).size;
+  if (distinctDays(recent) < 2 || distinctDays(previous) < 2) return null;
+  const mean = (items: WeightEntry[]) =>
+    items.reduce((total, entry) => total + entry.weightKg, 0) / items.length;
+  return mean(previous) - mean(recent);
+}
+
+function linePath(
+  values: number[],
+  xForIndex: (index: number) => number,
+  yForValue: (value: number) => number,
+) {
+  return values
+    .map(
+      (value, index) =>
+        `${index === 0 ? "M" : "L"}${xForIndex(index).toFixed(2)},${yForValue(
+          value,
+        ).toFixed(2)}`,
+    )
+    .join(" ");
+}
+
+function EmptyChart({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-48 items-center justify-center rounded-md border border-dashed border-zinc-200 bg-zinc-50 px-5 text-center text-sm text-zinc-500">
+      {children}
+    </div>
+  );
+}
+
+function WeightChart({ entries }: { entries: WeightEntry[] }) {
+  const points = rollingWeightTrend(entries).slice(-90);
+  if (points.length === 0) {
+    return <EmptyChart>Add a weight to begin the trend chart.</EmptyChart>;
+  }
+
+  const width = 680;
+  const height = 240;
+  const padding = { left: 48, right: 18, top: 18, bottom: 34 };
+  const values = points.flatMap((point) => [point.raw, point.trend]);
+  const minimum = Math.floor((Math.min(...values) - 0.8) * 2) / 2;
+  const maximum = Math.ceil((Math.max(...values) + 0.8) * 2) / 2;
+  const range = Math.max(1, maximum - minimum);
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const xForIndex = (index: number) =>
+    points.length === 1
+      ? padding.left + plotWidth / 2
+      : padding.left + (index / (points.length - 1)) * plotWidth;
+  const yForValue = (value: number) =>
+    padding.top + ((maximum - value) / range) * plotHeight;
+  const rawPath = linePath(
+    points.map((point) => point.raw),
+    xForIndex,
+    yForValue,
+  );
+  const trendPath = linePath(
+    points.map((point) => point.trend),
+    xForIndex,
+    yForValue,
+  );
+
+  return (
+    <div className="overflow-hidden rounded-md border border-zinc-200 bg-white p-2">
+      <div className="mb-2 flex flex-wrap gap-4 px-2 text-xs font-medium text-zinc-600">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-zinc-400" /> Raw
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-1 w-5 rounded-full bg-emerald-600" /> 7-day trend
+        </span>
+      </div>
+      <svg
+        className="h-56 w-full"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-labelledby="weight-chart-title weight-chart-description"
+      >
+        <title id="weight-chart-title">Weight history and seven-day trend</title>
+        <desc id="weight-chart-description">
+          Raw weight measurements are shown with a smoothed seven-day rolling
+          average.
+        </desc>
+        {[0, 0.5, 1].map((fraction) => {
+          const value = maximum - fraction * range;
+          const y = yForValue(value);
+          return (
+            <g key={fraction}>
+              <line
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={y}
+                y2={y}
+                stroke="#e4e4e7"
+                strokeWidth="1"
+              />
+              <text x="4" y={y + 4} fill="#71717a" fontSize="12">
+                {value.toFixed(1)}
+              </text>
+            </g>
+          );
+        })}
+        <path
+          d={rawPath}
+          fill="none"
+          stroke="#a1a1aa"
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
+        {points.map((point, index) => (
+          <circle
+            key={`${point.measuredAt}-${index}`}
+            cx={xForIndex(index)}
+            cy={yForValue(point.raw)}
+            r="3"
+            fill="#71717a"
+          />
+        ))}
+        <path
+          d={trendPath}
+          fill="none"
+          stroke="#059669"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <text x={padding.left} y={height - 8} fill="#71717a" fontSize="12">
+          {formatShortDate(points[0].measuredAt)}
+        </text>
+        <text
+          x={width - padding.right}
+          y={height - 8}
+          fill="#71717a"
+          fontSize="12"
+          textAnchor="end"
+        >
+          {formatShortDate(points.at(-1)?.measuredAt ?? "")}
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function BloodPressureChart({ sessions }: { sessions: BloodPressureSession[] }) {
+  const points = sortByMeasuredAt(sessions)
+    .slice(-42)
+    .map((session) => ({
+      measuredAt: session.measuredAt,
+      ...sessionAverage(session),
+    }));
+  if (points.length === 0) {
+    return <EmptyChart>Add a session to begin the blood pressure chart.</EmptyChart>;
+  }
+
+  const width = 680;
+  const height = 240;
+  const padding = { left: 44, right: 18, top: 18, bottom: 34 };
+  const allValues = points.flatMap((point) => [point.systolic, point.diastolic]);
+  const minimum = Math.max(20, Math.floor((Math.min(...allValues) - 10) / 10) * 10);
+  const maximum = Math.max(
+    150,
+    Math.ceil((Math.max(...allValues) + 10) / 10) * 10,
+  );
+  const range = Math.max(20, maximum - minimum);
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const xForIndex = (index: number) =>
+    points.length === 1
+      ? padding.left + plotWidth / 2
+      : padding.left + (index / (points.length - 1)) * plotWidth;
+  const yForValue = (value: number) =>
+    padding.top + ((maximum - value) / range) * plotHeight;
+
+  return (
+    <div className="overflow-hidden rounded-md border border-zinc-200 bg-white p-2">
+      <div className="mb-2 flex flex-wrap gap-4 px-2 text-xs font-medium text-zinc-600">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-1 w-5 rounded-full bg-rose-600" /> Systolic average
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-1 w-5 rounded-full bg-sky-600" /> Diastolic average
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-5 border-t-2 border-dashed border-orange-400" />
+          Systolic thresholds: 130 and 140
+        </span>
+      </div>
+      <svg
+        className="h-56 w-full"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-labelledby="bp-chart-title bp-chart-description"
+      >
+        <title id="bp-chart-title">Blood pressure session averages</title>
+        <desc id="bp-chart-description">
+          Average systolic and diastolic values from each two-reading session. Dashed
+          lines mark systolic thresholds at 130 and 140 millimeters of mercury; they do
+          not apply to the diastolic series.
+        </desc>
+        {[minimum, minimum + range / 2, maximum].map((value) => {
+          const y = yForValue(value);
+          return (
+            <g key={value}>
+              <line
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={y}
+                y2={y}
+                stroke="#e4e4e7"
+              />
+              <text x="3" y={y + 4} fill="#71717a" fontSize="12">
+                {Math.round(value)}
+              </text>
+            </g>
+          );
+        })}
+        {[130, 140].map((threshold) =>
+          threshold >= minimum && threshold <= maximum ? (
+            <line
+              key={threshold}
+              x1={padding.left}
+              x2={width - padding.right}
+              y1={yForValue(threshold)}
+              y2={yForValue(threshold)}
+              stroke={threshold === 140 ? "#fda4af" : "#fdba74"}
+              strokeDasharray="5 5"
+            />
+          ) : null,
+        )}
+        <path
+          d={linePath(
+            points.map((point) => point.systolic),
+            xForIndex,
+            yForValue,
+          )}
+          fill="none"
+          stroke="#e11d48"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d={linePath(
+            points.map((point) => point.diastolic),
+            xForIndex,
+            yForValue,
+          )}
+          fill="none"
+          stroke="#0284c7"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {points.map((point, index) => (
+          <g key={`${point.measuredAt}-${index}`}>
+            <circle
+              cx={xForIndex(index)}
+              cy={yForValue(point.systolic)}
+              r="3"
+              fill="#be123c"
+            />
+            <circle
+              cx={xForIndex(index)}
+              cy={yForValue(point.diastolic)}
+              r="3"
+              fill="#0369a1"
+            />
+          </g>
+        ))}
+        <text x={padding.left} y={height - 8} fill="#71717a" fontSize="12">
+          {formatShortDate(points[0].measuredAt)}
+        </text>
+        <text
+          x={width - padding.right}
+          y={height - 8}
+          fill="#71717a"
+          fontSize="12"
+          textAnchor="end"
+        >
+          {formatShortDate(points.at(-1)?.measuredAt ?? "")}
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function SectionHeading({
+  icon,
+  title,
+  description,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-4 flex items-start gap-3">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+        {icon}
+      </span>
+      <div>
+        <h2 className="text-lg font-semibold text-zinc-950">{title}</h2>
+        <p className="mt-0.5 text-sm leading-5 text-zinc-500">{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function DeleteButton({ label, onDelete }: { label: string; onDelete: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onDelete}
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-zinc-200 text-zinc-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-100"
+      aria-label={label}
+    >
+      <Trash2 className="h-4 w-4" aria-hidden="true" />
+    </button>
+  );
+}
+
+function WeightForm({
+  now,
+  onAdd,
+}: {
+  now: Date;
+  onAdd: (entry: WeightEntry) => MaybePromise;
+}) {
+  const [weight, setWeight] = useState("");
+  const [measuredAt, setMeasuredAt] = useState(() => toDateTimeLocal(now));
+  const [notes, setNotes] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const parsedWeight = parseNumber(weight);
+    const iso = toIsoTimestamp(measuredAt);
+    if (parsedWeight === null || parsedWeight < 30 || parsedWeight > 350) {
+      setMessage("Enter a weight from 30.0 to 350.0 kg.");
+      return;
+    }
+    if (!iso || isFutureTimestamp(iso, now)) {
+      setMessage("Choose a valid time that is not in the future.");
+      return;
+    }
+    const savedAt = new Date().toISOString();
+    setSaving(true);
+    try {
+      await onAdd({
+        id: makeId("weight"),
+        weightKg: Math.round(parsedWeight * 10) / 10,
+        measuredAt: iso,
+        notes: notes.trim() || undefined,
+        createdAt: savedAt,
+        updatedAt: savedAt,
+      });
+      setWeight("");
+      setNotes("");
+      setMeasuredAt(toDateTimeLocal(now));
+      setMessage("Weight saved.");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form id="weight-entry" onSubmit={submit} className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4">
+      <h3 className="font-semibold text-zinc-950">Quick weight entry</h3>
+      <p className="mt-1 text-xs leading-5 text-zinc-500">
+        Best comparison: first thing in the morning, after using the bathroom and
+        before food or drink, on the same scale.
+      </p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label>
+          <span className={LABEL_CLASS}>Weight (kg)</span>
+          <input
+            className={INPUT_CLASS}
+            type="number"
+            inputMode="decimal"
+            min="30"
+            max="350"
+            step="0.1"
+            required
+            value={weight}
+            onChange={(event) => setWeight(event.target.value)}
+            placeholder="93.6"
+          />
+        </label>
+        <label>
+          <span className={LABEL_CLASS}>Measured at</span>
+          <input
+            className={INPUT_CLASS}
+            type="datetime-local"
+            required
+            max={toDateTimeLocal(new Date(now.getTime() + 10 * MINUTE_MS))}
+            value={measuredAt}
+            onChange={(event) => setMeasuredAt(event.target.value)}
+          />
+        </label>
+      </div>
+      <label className="mt-3 block">
+        <span className={LABEL_CLASS}>Note (optional)</span>
+        <input
+          className={INPUT_CLASS}
+          maxLength={300}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Sleep, meal, travel, or measurement context"
+        />
+      </label>
+      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+        <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          {saving ? "Saving…" : "Save weight"}
+        </button>
+        <p
+          className={`text-sm ${message === "Weight saved." ? "text-emerald-700" : "text-rose-700"}`}
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      </div>
+    </form>
+  );
+}
+
+function BloodPressureForm({
+  now,
+  onAdd,
+}: {
+  now: Date;
+  onAdd: (session: BloodPressureSession) => MaybePromise;
+}) {
+  const currentHour = tehranHour(now);
+  const defaultPeriod: BloodPressurePeriod =
+    currentHour < 5 || currentHour >= 18
+      ? "evening"
+      : currentHour < 14
+        ? "morning"
+        : "other";
+  const [measuredAt, setMeasuredAt] = useState(() => toDateTimeLocal(now));
+  const [period, setPeriod] = useState<BloodPressurePeriod>(defaultPeriod);
+  const [firstSystolic, setFirstSystolic] = useState("");
+  const [firstDiastolic, setFirstDiastolic] = useState("");
+  const [firstPulse, setFirstPulse] = useState("");
+  const [secondSystolic, setSecondSystolic] = useState("");
+  const [secondDiastolic, setSecondDiastolic] = useState("");
+  const [secondPulse, setSecondPulse] = useState("");
+  const [symptoms, setSymptoms] = useState<BloodPressureEmergencySymptom[]>([]);
+  const [notes, setNotes] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const draftReadings = useMemo(() => {
+    const firstSys = parseNumber(firstSystolic);
+    const firstDia = parseNumber(firstDiastolic);
+    const firstPulseValue = parseNumber(firstPulse);
+    const secondSys = parseNumber(secondSystolic);
+    const secondDia = parseNumber(secondDiastolic);
+    const secondPulseValue = parseNumber(secondPulse);
+    if (
+      firstSys === null ||
+      firstDia === null ||
+      secondSys === null ||
+      secondDia === null
+    ) {
+      return null;
+    }
+    return [
+      {
+        systolic: firstSys,
+        diastolic: firstDia,
+        ...(firstPulseValue === null ? {} : { pulseBpm: firstPulseValue }),
+      },
+      {
+        systolic: secondSys,
+        diastolic: secondDia,
+        ...(secondPulseValue === null ? {} : { pulseBpm: secondPulseValue }),
+      },
+    ] as const;
+  }, [
+    firstDiastolic,
+    firstPulse,
+    firstSystolic,
+    secondDiastolic,
+    secondPulse,
+    secondSystolic,
+  ]);
+
+  const anyDraftSevere = draftReadings?.some(isSevereReading) ?? false;
+  const persistentDraftSevere = draftReadings?.every(isSevereReading) ?? false;
+  const anyDraftExtreme = draftReadings?.some(isExtremeGuardrailReading) ?? false;
+  const independentEmergencySelected = hasIndependentEmergencySymptom(symptoms);
+  const severeWithBackPain = anyDraftSevere && symptoms.includes("back-pain");
+  const liveEmergency = independentEmergencySelected || severeWithBackPain;
+
+  function readingFromFields(
+    systolicValue: string,
+    diastolicValue: string,
+    pulseValue: string,
+  ): BloodPressureReading | null {
+    const systolic = parseNumber(systolicValue);
+    const diastolic = parseNumber(diastolicValue);
+    const pulse = parseNumber(pulseValue);
+    if (
+      systolic === null ||
+      diastolic === null ||
+      systolic < 50 ||
+      systolic > 280 ||
+      diastolic < 30 ||
+      diastolic > 180 ||
+      systolic <= diastolic ||
+      (pulseValue.trim() !== "" && (pulse === null || pulse < 25 || pulse > 240))
+    ) {
+      return null;
+    }
+    return {
+      systolic: Math.round(systolic),
+      diastolic: Math.round(diastolic),
+      pulseBpm: pulse === null ? undefined : Math.round(pulse),
+    };
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const first = readingFromFields(firstSystolic, firstDiastolic, firstPulse);
+    const second = readingFromFields(secondSystolic, secondDiastolic, secondPulse);
+    const iso = toIsoTimestamp(measuredAt);
+    if (!first || !second) {
+      setMessage(
+        "For each reading enter systolic 50–280, diastolic 30–180, and optional pulse 25–240. Systolic must be higher than diastolic.",
+      );
+      return;
+    }
+    if (!iso || isFutureTimestamp(iso, now)) {
+      setMessage("Choose a valid session time that is not in the future.");
+      return;
+    }
+    const savedAt = new Date().toISOString();
+    setSaving(true);
+    try {
+      await onAdd({
+        id: makeId("bp"),
+        measuredAt: iso,
+        period,
+        readings: [first, second],
+        emergencySymptoms: symptoms,
+        notes: notes.trim() || undefined,
+        createdAt: savedAt,
+        updatedAt: savedAt,
+      });
+      setFirstSystolic("");
+      setFirstDiastolic("");
+      setFirstPulse("");
+      setSecondSystolic("");
+      setSecondDiastolic("");
+      setSecondPulse("");
+      setSymptoms([]);
+      setNotes("");
+      setMeasuredAt(toDateTimeLocal(now));
+      setMessage("Blood pressure session saved.");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleSymptom(symptom: BloodPressureEmergencySymptom) {
+    setSymptoms((current) =>
+      current.includes(symptom)
+        ? current.filter((item) => item !== symptom)
+        : [...current, symptom],
+    );
+  }
+
+  return (
+    <form id="bp-entry" onSubmit={submit} className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4">
+      <h3 className="font-semibold text-zinc-950">Two-reading session</h3>
+      <div className="mt-1 rounded-md border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-900">
+        For 30 minutes beforehand, avoid caffeine, alcohol, smoking, and exercise.
+        Empty your bladder, then sit quietly for at least 5 minutes with back supported,
+        feet flat, and legs uncrossed. Use a validated upper-arm cuff that fits your arm
+        on bare skin; support the arm at heart level and do not talk. Take reading 2 at
+        least one minute after reading 1.
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label>
+          <span className={LABEL_CLASS}>Session time</span>
+          <input
+            className={INPUT_CLASS}
+            type="datetime-local"
+            required
+            max={toDateTimeLocal(new Date(now.getTime() + 10 * MINUTE_MS))}
+            value={measuredAt}
+            onChange={(event) => setMeasuredAt(event.target.value)}
+          />
+        </label>
+        <label>
+          <span className={LABEL_CLASS}>Period</span>
+          <select
+            className={INPUT_CLASS}
+            value={period}
+            onChange={(event) => setPeriod(event.target.value as BloodPressurePeriod)}
+          >
+            <option value="morning">Morning (before medicine only if dose is still pending)</option>
+            <option value="evening">Evening, before sleep</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <fieldset className="rounded-md border border-zinc-200 bg-white p-3">
+          <legend className="px-1 text-sm font-semibold text-zinc-800">Reading 1</legend>
+          <div className="grid grid-cols-3 gap-2">
+            <label>
+              <span className="mb-1 block text-xs text-zinc-500">Systolic</span>
+              <input
+                aria-label="First systolic reading"
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="50"
+                max="280"
+                required
+                value={firstSystolic}
+                onChange={(event) => setFirstSystolic(event.target.value)}
+                placeholder="120"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-xs text-zinc-500">Diastolic</span>
+              <input
+                aria-label="First diastolic reading"
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="30"
+                max="180"
+                required
+                value={firstDiastolic}
+                onChange={(event) => setFirstDiastolic(event.target.value)}
+                placeholder="80"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-xs text-zinc-500">Pulse</span>
+              <input
+                aria-label="First pulse reading, optional"
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="25"
+                max="240"
+                value={firstPulse}
+                onChange={(event) => setFirstPulse(event.target.value)}
+                placeholder="—"
+              />
+            </label>
+          </div>
+        </fieldset>
+        <fieldset className="rounded-md border border-zinc-200 bg-white p-3">
+          <legend className="px-1 text-sm font-semibold text-zinc-800">
+            Reading 2 — after ≥1 minute
+          </legend>
+          <div className="grid grid-cols-3 gap-2">
+            <label>
+              <span className="mb-1 block text-xs text-zinc-500">Systolic</span>
+              <input
+                aria-label="Second systolic reading"
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="50"
+                max="280"
+                required
+                value={secondSystolic}
+                onChange={(event) => setSecondSystolic(event.target.value)}
+                placeholder="118"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-xs text-zinc-500">Diastolic</span>
+              <input
+                aria-label="Second diastolic reading"
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="30"
+                max="180"
+                required
+                value={secondDiastolic}
+                onChange={(event) => setSecondDiastolic(event.target.value)}
+                placeholder="78"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-xs text-zinc-500">Pulse</span>
+              <input
+                aria-label="Second pulse reading, optional"
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="25"
+                max="240"
+                value={secondPulse}
+                onChange={(event) => setSecondPulse(event.target.value)}
+                placeholder="—"
+              />
+            </label>
+          </div>
+        </fieldset>
+      </div>
+
+      {liveEmergency ? (
+        <div
+          role="alert"
+          className="mt-3 rounded-md border-2 border-red-300 bg-red-50 p-3 text-sm font-medium leading-6 text-red-950"
+        >
+          {independentEmergencySelected ? (
+            <>
+              Chest pain, severe or unexplained shortness of breath, or a sudden stroke
+              warning sign requires emergency care regardless of the blood pressure
+              number. Call your local emergency service now; do not finish data entry.
+            </>
+          ) : (
+            <>
+              A severe-range reading and back pain are selected. Call your local
+              emergency service now. This app does not interpret back pain by itself.
+            </>
+          )}
+        </div>
+      ) : anyDraftSevere ? (
+        <div
+          role="alert"
+          className="mt-3 rounded-md border-2 border-red-300 bg-red-50 p-3 text-sm font-medium leading-6 text-red-950"
+        >
+          {persistentDraftSevere ? (
+            <>
+              Both readings remain at least 180 systolic or 120 diastolic. Contact your
+              health care professional immediately. If an emergency symptom appears,
+              call your local emergency service now.
+            </>
+          ) : (
+            <>
+              One reading is at least 180 systolic or 120 diastolic. Rest at least one
+              minute and repeat carefully. If a repeat remains this high, contact your
+              health care professional immediately.
+            </>
+          )}
+        </div>
+      ) : anyDraftExtreme ? (
+        <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+          <strong>Extreme-value check:</strong> this entry is outside the app&apos;s usual
+          data-quality guardrail. Recheck the digits, cuff fit and placement, posture,
+          and repeat after resting. Do not change a genuine reading merely to clear this
+          flag; seek clinical advice if the value is confirmed or you feel unwell.
+        </div>
+      ) : null}
+
+      <fieldset className="mt-3 rounded-md border border-zinc-200 bg-white p-3">
+        <legend className="px-1 text-sm font-semibold text-zinc-800">
+          Symptoms present now
+        </legend>
+        <p className="mb-2 text-xs leading-5 text-zinc-500">
+          Chest pain, severe or unexplained shortness of breath, and sudden stroke signs
+          need emergency care regardless of BP. Back pain with a severe BP reading is
+          also an emergency warning; this app does not interpret back pain alone.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {EMERGENCY_SYMPTOMS.map((symptom) => (
+            <label
+              key={symptom.id}
+              className="flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
+            >
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-rose-600"
+                checked={symptoms.includes(symptom.id)}
+                onChange={() => toggleSymptom(symptom.id)}
+              />
+              {symptom.label}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <label className="mt-3 block">
+        <span className={LABEL_CLASS}>Context (optional)</span>
+        <input
+          className={INPUT_CLASS}
+          maxLength={300}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Symptoms, caffeine, exercise, missed rest, or cuff concern"
+        />
+      </label>
+      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+        <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          {saving ? "Saving…" : "Save both readings"}
+        </button>
+        <p
+          className={`text-sm ${
+            message === "Blood pressure session saved."
+              ? "text-emerald-700"
+              : "text-rose-700"
+          }`}
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      </div>
+    </form>
+  );
+}
+
+function DietForm({
+  now,
+  onAdd,
+}: {
+  now: Date;
+  onAdd: (checkIn: DietCheckIn) => MaybePromise;
+}) {
+  const [measuredAt, setMeasuredAt] = useState(() => toDateTimeLocal(now));
+  const [adherence, setAdherence] = useState<DietAdherence>("on-plan");
+  const [sodiumAware, setSodiumAware] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const iso = toIsoTimestamp(measuredAt);
+    if (!iso || isFutureTimestamp(iso, now)) {
+      setMessage("Choose a valid check-in time that is not in the future.");
+      return;
+    }
+    const savedAt = new Date().toISOString();
+    setSaving(true);
+    try {
+      await onAdd({
+        id: makeId("diet"),
+        measuredAt: iso,
+        adherence,
+        sodiumAware,
+        notes: notes.trim() || undefined,
+        createdAt: savedAt,
+        updatedAt: savedAt,
+      });
+      setNotes("");
+      setMeasuredAt(toDateTimeLocal(now));
+      setMessage("Diet check-in saved.");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form id="diet-entry" onSubmit={submit} className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4">
+      <h3 className="font-semibold text-zinc-950">Daily adherence check-in</h3>
+      <p className="mt-1 text-xs leading-5 text-zinc-500">
+        This records consistency without prescribing calories. A partial day is useful
+        data, not failure.
+      </p>
+      <fieldset className="mt-3">
+        <legend className={LABEL_CLASS}>How closely did you follow your plan?</legend>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {(
+            [
+              ["on-plan", "On plan"],
+              ["mostly-on-plan", "Mostly on plan"],
+              ["off-plan", "Off plan"],
+            ] as const
+          ).map(([value, label]) => (
+            <label
+              key={value}
+              className={`flex min-h-11 cursor-pointer items-center justify-center rounded-md border px-3 py-2 text-sm font-semibold transition ${
+                adherence === value
+                  ? "border-emerald-600 bg-emerald-600 text-white"
+                  : "border-zinc-200 bg-white text-zinc-700 hover:border-emerald-200"
+              }`}
+            >
+              <input
+                className="sr-only"
+                type="radio"
+                name="diet-adherence"
+                value={value}
+                checked={adherence === value}
+                onChange={() => setAdherence(value)}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label>
+          <span className={LABEL_CLASS}>Check-in time</span>
+          <input
+            className={INPUT_CLASS}
+            type="datetime-local"
+            required
+            max={toDateTimeLocal(new Date(now.getTime() + 10 * MINUTE_MS))}
+            value={measuredAt}
+            onChange={(event) => setMeasuredAt(event.target.value)}
+          />
+        </label>
+        <label className="flex min-h-11 items-center gap-3 self-end rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-sm font-medium text-zinc-700">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-emerald-600"
+            checked={sodiumAware}
+            onChange={(event) => setSodiumAware(event.target.checked)}
+          />
+          I paid attention to sodium today
+        </label>
+      </div>
+      <label className="mt-3 block">
+        <span className={LABEL_CLASS}>What helped or got in the way? (optional)</span>
+        <textarea
+          className={`${INPUT_CLASS} min-h-20 resize-y`}
+          maxLength={500}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Meals, hunger, sleep, stress, wins, or obstacles"
+        />
+      </label>
+      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+        <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          {saving ? "Saving…" : "Save check-in"}
+        </button>
+        <p
+          className={`text-sm ${
+            message === "Diet check-in saved." ? "text-emerald-700" : "text-rose-700"
+          }`}
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      </div>
+    </form>
+  );
+}
+
+function SettingsPanel({
+  settings,
+  onUpdate,
+}: {
+  settings: HealthSettings;
+  onUpdate: (settings: HealthSettings) => MaybePromise;
+}) {
+  const [draft, setDraft] = useState(settings);
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function setField<K extends keyof HealthSettings>(key: K, value: HealthSettings[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    if (
+      !Number.isFinite(draft.baselineWeightKg) ||
+      draft.baselineWeightKg < 30 ||
+      draft.baselineWeightKg > 350 ||
+      !Number.isFinite(draft.goalWeightKg) ||
+      draft.goalWeightKg < 30 ||
+      draft.goalWeightKg > 350 ||
+      draft.goalWeightKg >= draft.baselineWeightKg
+    ) {
+      setMessage("Use valid weights from 30–350 kg, with goal below baseline.");
+      return;
+    }
+    if (!parseDateOnly(draft.baselineDate)) {
+      setMessage("Choose a valid baseline date.");
+      return;
+    }
+    const cycleDays = inclusiveCalendarDays(
+      draft.bpCycleStartDate,
+      draft.bpCycleEndDate,
+    );
+    if (cycleDays === null || cycleDays < 3 || cycleDays > 7) {
+      setMessage("Blood pressure cycles must cover 3–7 calendar days; 7 is preferred.");
+      return;
+    }
+    const times = [
+      draft.weightReminderTime,
+      draft.bpMorningReminderTime,
+      draft.bpEveningReminderTime,
+      draft.dietReminderTime,
+    ];
+    if (times.some((time) => !/^\d{2}:\d{2}$/.test(time))) {
+      setMessage("Choose valid reminder times.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onUpdate(draft);
+      setMessage("Health settings saved.");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className={CARD_CLASS}>
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 font-semibold text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200">
+        <span className="flex items-center gap-2">
+          <Settings2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+          Health goals and reminders
+        </span>
+        <span className="text-xs font-medium text-zinc-500">Open settings</span>
+      </summary>
+      <form onSubmit={submit} className="mt-4 border-t border-zinc-100 pt-4">
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-5 text-amber-950">
+          <strong>Reminder limits:</strong> these controls store reminder preferences.
+          Alerts from this screen are dependable only while the app is open. Background
+          or closed-app notifications require separate service-worker or server delivery
+          and are not guaranteed here.
+        </div>
+
+        <fieldset className="mt-4 rounded-md border border-zinc-200 p-3">
+          <legend className="px-1 text-sm font-semibold text-zinc-800">Weight goal</legend>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label>
+              <span className={LABEL_CLASS}>Baseline kg</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                min="30"
+                max="350"
+                step="0.1"
+                value={draft.baselineWeightKg}
+                onChange={(event) =>
+                  setField("baselineWeightKg", Number(event.target.value))
+                }
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Baseline date</span>
+              <input
+                className={INPUT_CLASS}
+                type="date"
+                value={draft.baselineDate}
+                onChange={(event) => setField("baselineDate", event.target.value)}
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Goal kg</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                min="30"
+                max="350"
+                step="0.1"
+                value={draft.goalWeightKg}
+                onChange={(event) => setField("goalWeightKg", Number(event.target.value))}
+              />
+            </label>
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <label>
+              <span className={LABEL_CLASS}>Morning reminder</span>
+              <input
+                className={INPUT_CLASS}
+                type="time"
+                value={draft.weightReminderTime}
+                onChange={(event) => setField("weightReminderTime", event.target.value)}
+              />
+            </label>
+            <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-emerald-600"
+                checked={draft.weightReminderEnabled}
+                onChange={(event) =>
+                  setField("weightReminderEnabled", event.target.checked)
+                }
+              />
+              Enabled
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset className="mt-4 rounded-md border border-zinc-200 p-3">
+          <legend className="px-1 text-sm font-semibold text-zinc-800">
+            Blood pressure measurement cycle
+          </legend>
+          <p className="mb-3 text-xs leading-5 text-zinc-500">
+            Use 3 days minimum and 7 days preferred. Each morning and evening session
+            contains two readings at least one minute apart.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className={LABEL_CLASS}>Cycle starts</span>
+              <input
+                className={INPUT_CLASS}
+                type="date"
+                value={draft.bpCycleStartDate}
+                onChange={(event) => setField("bpCycleStartDate", event.target.value)}
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Cycle ends</span>
+              <input
+                className={INPUT_CLASS}
+                type="date"
+                value={draft.bpCycleEndDate}
+                onChange={(event) => setField("bpCycleEndDate", event.target.value)}
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Morning, before medicine and food</span>
+              <input
+                className={INPUT_CLASS}
+                type="time"
+                value={draft.bpMorningReminderTime}
+                onChange={(event) =>
+                  setField("bpMorningReminderTime", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Evening, before sleep</span>
+              <input
+                className={INPUT_CLASS}
+                type="time"
+                value={draft.bpEveningReminderTime}
+                onChange={(event) =>
+                  setField("bpEveningReminderTime", event.target.value)
+                }
+              />
+            </label>
+          </div>
+          <label className="mt-3 flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-emerald-600"
+              checked={draft.bpReminderEnabled}
+              onChange={(event) => setField("bpReminderEnabled", event.target.checked)}
+            />
+            Enable morning and evening cycle reminders
+          </label>
+        </fieldset>
+
+        <fieldset className="mt-4 rounded-md border border-zinc-200 p-3">
+          <legend className="px-1 text-sm font-semibold text-zinc-800">
+            Diet and browser preferences
+          </legend>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className={LABEL_CLASS}>Diet check-in reminder</span>
+              <input
+                className={INPUT_CLASS}
+                type="time"
+                value={draft.dietReminderTime}
+                onChange={(event) => setField("dietReminderTime", event.target.value)}
+              />
+            </label>
+            <div className="space-y-2 sm:self-end">
+              <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-emerald-600"
+                  checked={draft.dietReminderEnabled}
+                  onChange={(event) =>
+                    setField("dietReminderEnabled", event.target.checked)
+                  }
+                />
+                Enable diet reminder
+              </label>
+              <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-emerald-600"
+                  checked={draft.browserNotifications}
+                  onChange={(event) =>
+                    setField("browserNotifications", event.target.checked)
+                  }
+                />
+                Browser notification preference
+              </label>
+            </div>
+          </div>
+        </fieldset>
+
+        <div className="mt-4 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+          <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
+            <BellRing className="h-4 w-4" aria-hidden="true" />
+            {saving ? "Saving…" : "Save health settings"}
+          </button>
+          <p
+            className={`text-sm ${
+              message === "Health settings saved."
+                ? "text-emerald-700"
+                : "text-rose-700"
+            }`}
+            aria-live="polite"
+          >
+            {message}
+          </p>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+export function HealthTracker({
+  weightEntries,
+  bloodPressureSessions,
+  dietCheckIns,
+  settings,
+  now,
+  onAddWeight,
+  onDeleteWeight,
+  onAddBloodPressure,
+  onDeleteBloodPressure,
+  onAddDiet,
+  onDeleteDiet,
+  onUpdateSettings,
+}: HealthTrackerProps) {
+  const validNow = Number.isFinite(now.getTime()) ? now : new Date(0);
+  const todayKey = localDateKey(validNow);
+  const cycleActive = isInCycle(todayKey, settings);
+  const sortedWeights = useMemo(() => sortByMeasuredAt(weightEntries), [weightEntries]);
+  const sortedBp = useMemo(
+    () => sortByMeasuredAt(bloodPressureSessions),
+    [bloodPressureSessions],
+  );
+  const sortedDiet = useMemo(() => sortByMeasuredAt(dietCheckIns), [dietCheckIns]);
+
+  const latestWeight = sortedWeights.at(-1);
+  const currentWeight = latestWeight?.weightKg ?? settings.baselineWeightKg;
+  const totalPlannedLoss = Math.max(
+    0.1,
+    settings.baselineWeightKg - settings.goalWeightKg,
+  );
+  const lossSoFar = settings.baselineWeightKg - currentWeight;
+  const progress = clamp((lossSoFar / totalPlannedLoss) * 100, 0, 100);
+  const remaining = Math.max(0, currentWeight - settings.goalWeightKg);
+  const fivePercentMilestone = settings.baselineWeightKg * 0.95;
+  const tenPercentMilestone = settings.baselineWeightKg * 0.9;
+  const pace = recentWeightPace(sortedWeights);
+  const weightTrend = rollingWeightTrend(sortedWeights);
+  const latestTrend = weightTrend.at(-1);
+  const unusualWeightDifference =
+    latestTrend &&
+    Math.abs(latestTrend.raw - latestTrend.trend) >=
+      Math.max(1, settings.baselineWeightKg * 0.015)
+      ? Math.abs(latestTrend.raw - latestTrend.trend)
+      : null;
+
+  const latestBp = sortedBp.at(-1);
+  const latestBpAverage = latestBp ? sessionAverage(latestBp) : null;
+  const latestBpWithinUrgentWindow = latestBp
+    ? isMeasurementWithin(latestBp.measuredAt, validNow, URGENT_READING_WINDOW_MS)
+    : false;
+  const hasRecentBpSession = latestBp
+    ? isMeasurementWithin(latestBp.measuredAt, validNow, RECENT_SESSION_WINDOW_MS)
+    : false;
+  const latestAnySevereRecorded =
+    latestBp?.readings.some(isSevereReading) ?? false;
+  const latestPersistentSevereRecorded =
+    latestBp?.readings.every(isSevereReading) ?? false;
+  const latestIndependentEmergencyRecorded = latestBp
+    ? hasIndependentEmergencySymptom(latestBp.emergencySymptoms)
+    : false;
+  const latestBackPainRecorded =
+    latestBp?.emergencySymptoms.includes("back-pain") ?? false;
+  const latestEmergency =
+    latestBpWithinUrgentWindow &&
+    (latestIndependentEmergencyRecorded ||
+      (latestAnySevereRecorded && latestBackPainRecorded));
+  const latestPersistentSevere =
+    latestBpWithinUrgentWindow && latestPersistentSevereRecorded;
+  const latestAnySevere = latestBpWithinUrgentWindow && latestAnySevereRecorded;
+  const latestHistoricalSevere =
+    !latestBpWithinUrgentWindow && latestAnySevereRecorded;
+  const currentCycleBp = cycleActive
+    ? sortedBp.filter((session) => {
+        const key = localDateKey(session.measuredAt);
+        const timestamp = new Date(session.measuredAt).getTime();
+        return (
+          key >= settings.bpCycleStartDate &&
+          key <= settings.bpCycleEndDate &&
+          timestamp <= validNow.getTime()
+        );
+      })
+    : [];
+  const recurringStageTwoDayCount = new Set(
+    currentCycleBp
+      .filter((session) => {
+        const average = sessionAverage(session);
+        return average.systolic >= 140 || average.diastolic >= 90;
+      })
+      .map((session) => localDateKey(session.measuredAt))
+      .filter(Boolean),
+  ).size;
+  const recurringStageTwo = cycleActive && recurringStageTwoDayCount >= 2;
+  const sevenDayBp = sortedBp.filter((session) => {
+    const timestamp = new Date(session.measuredAt).getTime();
+    return timestamp <= validNow.getTime() && timestamp > validNow.getTime() - 7 * DAY_MS;
+  });
+  const sevenDayBpAverage =
+    sevenDayBp.length > 0
+      ? sevenDayBp.reduce(
+          (result, session) => {
+            const average = sessionAverage(session);
+            return {
+              systolic: result.systolic + average.systolic / sevenDayBp.length,
+              diastolic: result.diastolic + average.diastolic / sevenDayBp.length,
+            };
+          },
+          { systolic: 0, diastolic: 0 },
+        )
+      : null;
+  const sevenDayBpDayCount = new Set(
+    sevenDayBp.map((session) => localDateKey(session.measuredAt)).filter(Boolean),
+  ).size;
+  const sevenDayBpTrendReady = sevenDayBpDayCount >= 3;
+
+  const latestDietByDay = new Map<string, DietCheckIn>();
+  for (const checkIn of sortedDiet) {
+    const key = localDateKey(checkIn.measuredAt);
+    if (key) latestDietByDay.set(key, checkIn);
+  }
+  const lastSevenDayKeys = Array.from({ length: 7 }, (_, index) =>
+    localDateKey(new Date(validNow.getTime() - index * DAY_MS)),
+  );
+  const weeklyDiet = lastSevenDayKeys
+    .map((key) => latestDietByDay.get(key))
+    .filter((entry): entry is DietCheckIn => Boolean(entry));
+  const onPlanDays = weeklyDiet.filter((entry) => entry.adherence === "on-plan").length;
+  const mostlyDays = weeklyDiet.filter(
+    (entry) => entry.adherence === "mostly-on-plan",
+  ).length;
+  const offPlanDays = weeklyDiet.filter((entry) => entry.adherence === "off-plan").length;
+  const sodiumAwareDays = weeklyDiet.filter((entry) => entry.sodiumAware).length;
+
+  const todayWeights = sortedWeights.filter(
+    (entry) => localDateKey(entry.measuredAt) === todayKey,
+  );
+  const todayBp = sortedBp.filter(
+    (session) => localDateKey(session.measuredAt) === todayKey,
+  );
+  const todayDiet = sortedDiet.filter(
+    (entry) => localDateKey(entry.measuredAt) === todayKey,
+  );
+  const morningBpDone = todayBp.some((session) => session.period === "morning");
+  const morningBpWindowPassed =
+    !morningBpDone && tehranHour(validNow) >= MORNING_BP_WINDOW_END_HOUR;
+  const dueActions: DueAction[] = [
+    ...(settings.weightReminderEnabled
+      ? [
+          {
+            id: "weight",
+            label: "Morning weight",
+            detail: todayWeights.length > 0
+              ? `${todayWeights.at(-1)?.weightKg.toFixed(1)} kg logged`
+              : `Best before food or drink · ${settings.weightReminderTime}`,
+            done: todayWeights.length > 0,
+            dueNow: timeHasPassed(validNow, settings.weightReminderTime),
+            href: "#weight-entry",
+          },
+        ]
+      : []),
+    ...(settings.bpReminderEnabled && cycleActive
+      ? [
+          {
+            id: "bp-morning",
+            label: "Morning blood pressure",
+            detail: morningBpDone
+              ? "Morning pair logged"
+              : morningBpWindowPassed
+                ? "Morning window passed; never delay medicine. Resume next morning, or take another reading only if your clinician advised it."
+                : "Take two readings before medicine only if the dose is still pending; never delay medicine.",
+            done: morningBpDone,
+            dueNow:
+              !morningBpWindowPassed &&
+              timeHasPassed(validNow, settings.bpMorningReminderTime),
+            windowPassed: morningBpWindowPassed,
+            href: "#bp-entry",
+          },
+          {
+            id: "bp-evening",
+            label: "Evening blood pressure",
+            detail: "Two readings, before sleep",
+            done: todayBp.some((session) => session.period === "evening"),
+            dueNow: timeHasPassed(validNow, settings.bpEveningReminderTime),
+            href: "#bp-entry",
+          },
+        ]
+      : []),
+    ...(settings.dietReminderEnabled
+      ? [
+          {
+            id: "diet",
+            label: "Diet check-in",
+            detail: "Record adherence, sodium awareness, and context",
+            done: todayDiet.length > 0,
+            dueNow: timeHasPassed(validNow, settings.dietReminderTime),
+            href: "#diet-entry",
+          },
+        ]
+      : []),
+  ];
+
+  function confirmDelete(label: string, callback: () => MaybePromise) {
+    if (!window.confirm(`Delete ${label}? This action will sync as a deletion.`)) return;
+    void Promise.resolve(callback()).catch((error) => {
+      window.alert(errorText(error));
+    });
+  }
+
+  return (
+    <section className="space-y-5 pb-24 text-zinc-950" aria-labelledby="health-title">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+            Health tracking
+          </p>
+          <h1 id="health-title" className="mt-1 text-2xl font-semibold tracking-tight">
+            Weight, pressure, and diet
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-zinc-500">
+            A measurement and habit record for discussing care with your clinician —
+            not a diagnosis or medication dosing tool.
+          </p>
+        </div>
+        <span className="inline-flex w-fit items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-600">
+          <CalendarDays className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+          {new Intl.DateTimeFormat(undefined, {
+            timeZone: HEALTH_TIME_ZONE,
+            weekday: "long",
+            month: "long",
+            day: "numeric",
+          }).format(validNow)}
+        </span>
+      </header>
+
+      {hasRecentBpSession && latestBp ? (
+        <details className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sky-950 shadow-sm">
+          <summary className="flex min-h-8 cursor-pointer list-none items-center gap-3 text-sm font-semibold marker:hidden">
+            <ShieldAlert className="h-5 w-5 shrink-0 text-sky-700" aria-hidden="true" />
+            <span>
+              Blood pressure safety guidance
+              <span className="mt-0.5 block text-xs font-normal text-sky-700">
+                Latest session logged {formatDateTime(latestBp.measuredAt)} · Tap to expand
+              </span>
+            </span>
+          </summary>
+          <div className="mt-3 border-t border-sky-200 pt-3 text-sm leading-6 text-sky-900">
+            <p>
+              Keep taking medicine exactly as prescribed; never delay, change, or stop a
+              dose because of this screen.
+            </p>
+            <p className="mt-2 font-semibold">
+              Call your local emergency service now for chest pain, severe or unexplained
+              shortness of breath, or stroke warning signs such as sudden numbness or
+              weakness, vision change, or difficulty speaking, regardless of BP.
+            </p>
+            <p className="mt-2">
+              If a repeat remains at least 180 systolic or 120 diastolic and any listed
+              symptom—including back pain—is present, call emergency services. This app
+              does not interpret back pain alone.
+            </p>
+          </div>
+        </details>
+      ) : (
+        <section className="rounded-lg border-2 border-rose-300 bg-rose-50 p-4 shadow-sm sm:p-5">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="mt-0.5 h-6 w-6 shrink-0 text-rose-700" aria-hidden="true" />
+            <div>
+              <h2 className="font-semibold text-rose-950">Check your blood pressure now</h2>
+              <p className="mt-1 text-sm leading-6 text-rose-900">
+                Because you take blood pressure medicine and recently felt your pressure
+                may be high, take one properly prepared two-reading session now if you can
+                safely do so. Keep taking medicine as prescribed; never delay, change, or
+                stop a dose because of this screen.
+              </p>
+              <p className="mt-2 text-sm font-semibold leading-6 text-rose-950">
+                Call your local emergency service now for chest pain, severe or unexplained
+                shortness of breath, or stroke warning signs such as sudden numbness or
+                weakness, vision change, or difficulty speaking, regardless of BP.
+              </p>
+              <p className="mt-2 text-sm leading-6 text-rose-900">
+                If a repeat remains at least 180 systolic or 120 diastolic and any listed
+                symptom—including back pain—is present, call emergency services. This app
+                does not interpret back pain alone.
+              </p>
+              <a
+                href="#bp-entry"
+                className="mt-3 inline-flex min-h-11 items-center justify-center rounded-md bg-rose-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-300"
+              >
+                Record two readings
+              </a>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {latestEmergency && latestBp ? (
+        <section role="alert" className="rounded-lg border-2 border-red-500 bg-red-100 p-4 text-red-950">
+          <h2 className="font-bold">Recent record may still need emergency action</h2>
+          <p className="mt-1 text-sm leading-6">
+            The session recorded {formatDateTime(latestBp.measuredAt)} included
+            symptoms selected as present at measurement time. This screen cannot tell
+            whether they continue now. If chest pain, severe or unexplained shortness of
+            breath, or a sudden stroke warning sign is still present or has returned,
+            call your local emergency service now regardless of BP. If back pain is
+            present and a repeat remains at least 180 systolic or 120 diastolic, call now.
+          </p>
+        </section>
+      ) : latestPersistentSevere && latestBp ? (
+        <section className="rounded-lg border-2 border-red-400 bg-red-50 p-4 text-red-950">
+          <h2 className="font-bold">Repeated severe readings need immediate contact</h2>
+          <p className="mt-1 text-sm leading-6">
+            Both readings recorded {formatDateTime(latestBp.measuredAt)} were at
+            least 180 systolic or 120 diastolic. Contact your health care professional
+            immediately. If an emergency symptom is present now, follow the emergency
+            guidance above.
+          </p>
+        </section>
+      ) : latestAnySevere && latestBp ? (
+        <section className="rounded-lg border border-red-300 bg-red-50 p-4 text-red-950">
+          <h2 className="font-semibold">A severe-range reading was recorded</h2>
+          <p className="mt-1 text-sm leading-6">
+            The recent session recorded {formatDateTime(latestBp.measuredAt)}
+            included one reading at least 180 systolic or 120 diastolic. Follow the
+            repeat-measurement instructions and share both readings with your health care
+            professional promptly.
+          </p>
+        </section>
+      ) : latestHistoricalSevere && latestBp ? (
+        <section className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-zinc-800">
+          <h2 className="text-sm font-semibold">Historical severe-range record</h2>
+          <p className="mt-1 text-xs leading-5 text-zinc-600">
+            The latest stored session, measured {formatDateTime(latestBp.measuredAt)},
+            included a value at least 180 systolic or 120 diastolic. This historical entry
+            does not establish your pressure or symptoms now. If a current repeat remains
+            this high, use the safety guidance above and contact your clinician promptly;
+            emergency symptoms require emergency care as described above.
+          </p>
+        </section>
+      ) : null}
+
+      <section className={CARD_CLASS} aria-labelledby="today-actions-title">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="today-actions-title" className="text-lg font-semibold">
+              Today
+            </h2>
+            <p className="mt-0.5 text-sm text-zinc-500">Small actions, one screen.</p>
+          </div>
+          <Clock3 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+        </div>
+        {dueActions.length > 0 ? (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {dueActions.map((action) => (
+              <a
+                key={action.id}
+                href={action.href}
+                className={`flex min-h-20 items-center gap-3 rounded-lg border p-3 transition focus:outline-none focus:ring-2 focus:ring-emerald-200 ${
+                  action.done
+                    ? "border-emerald-200 bg-emerald-50"
+                    : action.windowPassed
+                      ? "border-zinc-200 bg-zinc-100"
+                      : action.dueNow
+                        ? "border-amber-200 bg-amber-50 hover:border-amber-300"
+                        : "border-zinc-200 bg-zinc-50 hover:border-emerald-200"
+                }`}
+              >
+                <span
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${
+                    action.done
+                      ? "bg-emerald-600 text-white"
+                      : action.windowPassed
+                        ? "bg-white text-zinc-500"
+                        : action.dueNow
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-white text-zinc-500"
+                  }`}
+                >
+                  {action.done ? (
+                    <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                  ) : action.windowPassed ? (
+                    <Info className="h-5 w-5" aria-hidden="true" />
+                  ) : (
+                    <Clock3 className="h-5 w-5" aria-hidden="true" />
+                  )}
+                </span>
+                <span>
+                  <span className="block text-sm font-semibold text-zinc-900">
+                    {action.label}
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-4 text-zinc-500">
+                    {action.done
+                      ? "Done · "
+                      : action.windowPassed
+                        ? "Window passed · "
+                        : action.dueNow
+                          ? "Due now · "
+                          : "Later · "}
+                    {action.detail}
+                  </span>
+                </span>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 rounded-md bg-zinc-50 p-3 text-sm text-zinc-500">
+            No enabled scheduled actions. The blood pressure safety check above still
+            applies today.
+          </p>
+        )}
+        {settings.bpReminderEnabled && !cycleActive ? (
+          <p className="mt-3 text-xs text-zinc-500">
+            The scheduled blood pressure cycle is not active today. Start a new 3–7 day
+            cycle in settings when preparing a current report or clinician visit.
+          </p>
+        ) : null}
+      </section>
+
+      <section className={CARD_CLASS} aria-labelledby="weight-section-title">
+        <SectionHeading
+          icon={<Scale className="h-5 w-5" aria-hidden="true" />}
+          title="Weight journey"
+          description="Use consistent morning measurements and follow the trend, not a single fluctuation."
+        />
+        <span id="weight-section-title" className="sr-only">Weight journey</span>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-medium text-zinc-500">Baseline</p>
+            <p className="mt-1 text-xl font-semibold">{settings.baselineWeightKg.toFixed(1)} kg</p>
+            <p className="text-xs text-zinc-500">{settings.baselineDate}</p>
+          </div>
+          <div className="rounded-md bg-emerald-50 p-3">
+            <p className="text-xs font-medium text-emerald-700">Current</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-950">
+              {currentWeight.toFixed(1)} kg
+            </p>
+            <p className="text-xs text-emerald-700">
+              {latestWeight ? formatShortDate(latestWeight.measuredAt) : "Baseline only"}
+            </p>
+          </div>
+          <div className="rounded-md bg-sky-50 p-3">
+            <p className="text-xs font-medium text-sky-700">Goal</p>
+            <p className="mt-1 text-xl font-semibold text-sky-950">
+              {settings.goalWeightKg.toFixed(1)} kg
+            </p>
+            <p className="text-xs text-sky-700">{remaining.toFixed(1)} kg remaining</p>
+          </div>
+          <div className="rounded-md bg-amber-50 p-3">
+            <p className="text-xs font-medium text-amber-700">Recent pace</p>
+            <p className="mt-1 text-xl font-semibold text-amber-950">
+              {pace === null ? "—" : `${Math.abs(pace).toFixed(2)}`}
+            </p>
+            <p className="text-xs text-amber-700">
+              {pace === null ? "Needs 2 weeks" : pace >= 0 ? "kg/week loss" : "kg/week gain"}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-md border border-zinc-200 p-3">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="font-semibold text-zinc-800">
+              Progress to {settings.goalWeightKg.toFixed(1)} kg
+            </span>
+            <span className="font-semibold text-emerald-700">{progress.toFixed(0)}%</span>
+          </div>
+          <div
+            className="mt-2 h-2.5 overflow-hidden rounded-full bg-zinc-100"
+            role="progressbar"
+            aria-label="Weight goal progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progress)}
+          >
+            <div
+              className="h-full rounded-full bg-emerald-600"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+            <div className="rounded-md bg-zinc-50 px-2 py-2">
+              <strong className="block text-zinc-900">{fivePercentMilestone.toFixed(1)} kg</strong>
+              <span className="text-zinc-500">5% milestone</span>
+            </div>
+            <div className="rounded-md bg-zinc-50 px-2 py-2">
+              <strong className="block text-zinc-900">{tenPercentMilestone.toFixed(1)} kg</strong>
+              <span className="text-zinc-500">10% milestone</span>
+            </div>
+            <div className="rounded-md bg-emerald-50 px-2 py-2">
+              <strong className="block text-emerald-950">
+                {settings.goalWeightKg.toFixed(1)} kg
+              </strong>
+              <span className="text-emerald-700">Goal</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <WeightChart entries={sortedWeights} />
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm leading-5 text-emerald-950">
+            <div className="flex items-center gap-2 font-semibold">
+              <TrendingDown className="h-4 w-4" aria-hidden="true" />
+              General safe pace reference
+            </div>
+            <p className="mt-1">
+              About {SAFE_WEEKLY_LOSS_MIN_KG.toFixed(2)}–
+              {SAFE_WEEKLY_LOSS_MAX_KG.toFixed(2)} kg per week. Faster is not the same
+              as better, and your clinician may set a different plan.
+            </p>
+          </div>
+          <div
+            className={`rounded-md border p-3 text-sm leading-5 ${
+              (pace !== null && pace > SAFE_WEEKLY_LOSS_MAX_KG) ||
+              unusualWeightDifference !== null
+                ? "border-amber-300 bg-amber-50 text-amber-950"
+                : "border-zinc-200 bg-zinc-50 text-zinc-700"
+            }`}
+          >
+            <div className="flex items-center gap-2 font-semibold">
+              <Activity className="h-4 w-4" aria-hidden="true" />
+              Anomaly review
+            </div>
+            {pace !== null && pace > SAFE_WEEKLY_LOSS_MAX_KG ? (
+              <p className="mt-1">
+                The two-window trend suggests loss faster than 0.91 kg/week. Review
+                intake, hydration, symptoms, and the plan with a clinician or dietitian.
+              </p>
+            ) : unusualWeightDifference !== null ? (
+              <p className="mt-1">
+                The latest value is {unusualWeightDifference.toFixed(1)} kg away from
+                its 7-day trend. Repeat under the same morning conditions; this is a
+                data-quality flag, not a medical diagnosis.
+              </p>
+            ) : (
+              <p className="mt-1">
+                No trend flag yet. Day-to-day changes often reflect timing and fluid;
+                use the 7-day line for decisions.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+          <WeightForm now={validNow} onAdd={onAddWeight} />
+          <div className="rounded-lg border border-zinc-200 p-3">
+            <h3 className="font-semibold text-zinc-900">Recent weights</h3>
+            <div className="mt-2 space-y-2">
+              {sortedWeights.length > 0 ? (
+                sortedWeights
+                  .slice(-5)
+                  .reverse()
+                  .map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 p-2.5"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold">{entry.weightKg.toFixed(1)} kg</p>
+                        <p className="text-xs text-zinc-500">{formatDateTime(entry.measuredAt)}</p>
+                      </div>
+                      <DeleteButton
+                        label={`Delete ${entry.weightKg.toFixed(1)} kilogram weight entry`}
+                        onDelete={() =>
+                          confirmDelete("this weight entry", () => onDeleteWeight(entry.id))
+                        }
+                      />
+                    </div>
+                  ))
+              ) : (
+                <p className="text-sm text-zinc-500">No weight entries yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className={CARD_CLASS} aria-labelledby="bp-section-title">
+        <SectionHeading
+          icon={<HeartPulse className="h-5 w-5" aria-hidden="true" />}
+          title="Blood pressure"
+          description="A 3–7 day home cycle, with 7 days preferred: two readings morning and evening."
+        />
+        <span id="bp-section-title" className="sr-only">Blood pressure</span>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-medium text-zinc-500">Latest average</p>
+            <p className="mt-1 text-xl font-semibold">
+              {latestBpAverage
+                ? `${Math.round(latestBpAverage.systolic)}/${Math.round(latestBpAverage.diastolic)}`
+                : "—"}
+            </p>
+            <p className="text-xs text-zinc-500">mm Hg</p>
+          </div>
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-medium text-zinc-500">Latest range</p>
+            {latestBpAverage ? (
+              <span
+                className={`mt-2 inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${categoryClass(
+                  bpCategory(latestBpAverage.systolic, latestBpAverage.diastolic),
+                )}`}
+              >
+                {categoryLabel(
+                  bpCategory(latestBpAverage.systolic, latestBpAverage.diastolic),
+                )}
+              </span>
+            ) : (
+              <p className="mt-1 text-xl font-semibold">—</p>
+            )}
+          </div>
+          <div className="rounded-md bg-sky-50 p-3">
+            <p className="text-xs font-medium text-sky-700">
+              {sevenDayBpTrendReady ? "7-day average" : "Provisional average"}
+            </p>
+            <p className="mt-1 text-xl font-semibold text-sky-950">
+              {sevenDayBpAverage
+                ? `${Math.round(sevenDayBpAverage.systolic)}/${Math.round(
+                    sevenDayBpAverage.diastolic,
+                  )}`
+                : "—"}
+            </p>
+            <p className="text-xs text-sky-700">
+              {sevenDayBp.length} sessions · {sevenDayBpDayCount}/3 distinct days
+            </p>
+          </div>
+          <div className="rounded-md bg-emerald-50 p-3">
+            <p className="text-xs font-medium text-emerald-700">General goal</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-950">&lt;130/80</p>
+            <p className="text-xs text-emerald-700">Confirm your personal goal</p>
+          </div>
+        </div>
+
+        {sevenDayBpAverage &&
+        sevenDayBpTrendReady &&
+        (sevenDayBpAverage.systolic >= 130 || sevenDayBpAverage.diastolic >= 80) ? (
+          <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+            <strong>App 7-day trend flag—not a diagnosis:</strong> the average from
+            sessions across {sevenDayBpDayCount} distinct days is above the general
+            treatment goal of 130/80. Share the complete log with your clinician; do not
+            adjust medication yourself.
+          </div>
+        ) : null}
+        {sevenDayBpAverage && !sevenDayBpTrendReady ? (
+          <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 p-3 text-sm leading-6 text-sky-950">
+            <strong>Provisional trend only:</strong> the app waits for measurements on at
+            least 3 distinct days before raising a 7-day trend notice. You currently
+            have {sevenDayBpDayCount}; continue the current 3–7 day cycle, with 7 days
+            preferred, unless your clinician advised a different schedule.
+          </div>
+        ) : null}
+        {recurringStageTwo ? (
+          <div className="mt-3 rounded-md border border-rose-300 bg-rose-50 p-3 text-sm leading-6 text-rose-950">
+            <strong>App pattern flag—not a diagnosis:</strong> during the current
+            measurement cycle, session averages reached Stage 2 range (140 systolic or
+            90 diastolic or higher) on {recurringStageTwoDayCount} distinct days. The app
+            uses 2 days as a review heuristic. Arrange a prompt treatment review with your
+            prescriber, and continue medicine as prescribed unless they tell you otherwise.
+          </div>
+        ) : null}
+        {latestBpAverage &&
+        latestBp &&
+        (latestBpAverage.systolic < 90 || latestBpAverage.diastolic < 60) ? (
+          <div className="mt-3 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm leading-6 text-sky-950">
+            The latest stored average ({formatDateTime(latestBp.measuredAt)}) is
+            in a low range. One low value may not be harmful, but contact your clinician
+            promptly if you currently feel dizzy, confused, nauseated, faint, unusually
+            tired, or have blurred vision.
+          </div>
+        ) : null}
+
+        <div className="mt-4">
+          <BloodPressureChart sessions={sortedBp} />
+        </div>
+        <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-zinc-500">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          Ranges describe recorded numbers; only a qualified health professional can
+          diagnose hypertension or change treatment.
+        </p>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-[1.45fr_0.55fr]">
+          <BloodPressureForm now={validNow} onAdd={onAddBloodPressure} />
+          <div className="rounded-lg border border-zinc-200 p-3">
+            <h3 className="font-semibold text-zinc-900">Recent sessions</h3>
+            <div className="mt-2 space-y-2">
+              {sortedBp.length > 0 ? (
+                sortedBp
+                  .slice(-5)
+                  .reverse()
+                  .map((session) => {
+                    const average = sessionAverage(session);
+                    const category = bpCategory(average.systolic, average.diastolic);
+                    return (
+                      <div key={session.id} className="rounded-md bg-zinc-50 p-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold">
+                              {Math.round(average.systolic)}/{Math.round(average.diastolic)} average
+                            </p>
+                            <p className="mt-0.5 text-xs text-zinc-500">
+                              {session.readings[0].systolic}/{session.readings[0].diastolic}
+                              {" · "}
+                              {session.readings[1].systolic}/{session.readings[1].diastolic}
+                            </p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              {formatDateTime(session.measuredAt)} · {session.period}
+                            </p>
+                            <span
+                              className={`mt-1.5 inline-flex rounded border px-1.5 py-0.5 text-[11px] font-semibold ${categoryClass(category)}`}
+                            >
+                              {categoryLabel(category)}
+                            </span>
+                          </div>
+                          <DeleteButton
+                            label="Delete blood pressure session"
+                            onDelete={() =>
+                              confirmDelete("this blood pressure session", () =>
+                                onDeleteBloodPressure(session.id),
+                              )
+                            }
+                          />
+                        </div>
+                      </div>
+                    );
+                  })
+              ) : (
+                <p className="text-sm text-zinc-500">No sessions yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className={CARD_CLASS} aria-labelledby="diet-section-title">
+        <SectionHeading
+          icon={<Salad className="h-5 w-5" aria-hidden="true" />}
+          title="Diet adherence"
+          description="Track the plan you chose, note obstacles, and review the week without all-or-nothing scoring."
+        />
+        <span id="diet-section-title" className="sr-only">Diet adherence</span>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs text-zinc-500">Check-ins</p>
+            <p className="mt-1 text-xl font-semibold">{weeklyDiet.length}/7</p>
+          </div>
+          <div className="rounded-md bg-emerald-50 p-3">
+            <p className="text-xs text-emerald-700">On plan</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-950">{onPlanDays}</p>
+          </div>
+          <div className="rounded-md bg-amber-50 p-3">
+            <p className="text-xs text-amber-700">Mostly / off</p>
+            <p className="mt-1 text-xl font-semibold text-amber-950">
+              {mostlyDays} / {offPlanDays}
+            </p>
+          </div>
+          <div className="rounded-md bg-sky-50 p-3">
+            <p className="text-xs text-sky-700">Sodium-aware days</p>
+            <p className="mt-1 text-xl font-semibold text-sky-950">{sodiumAwareDays}</p>
+          </div>
+        </div>
+        <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
+          A DASH-style pattern and lower sodium can support blood pressure, but this
+          tracker does not prescribe calories, sodium, or potassium. Ask your clinician
+          before increasing potassium or using potassium salt substitutes, especially
+          with kidney disease or some blood pressure medicines.
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+          <DietForm now={validNow} onAdd={onAddDiet} />
+          <div className="rounded-lg border border-zinc-200 p-3">
+            <h3 className="font-semibold text-zinc-900">Recent check-ins</h3>
+            <div className="mt-2 space-y-2">
+              {sortedDiet.length > 0 ? (
+                sortedDiet
+                  .slice(-5)
+                  .reverse()
+                  .map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-start justify-between gap-2 rounded-md bg-zinc-50 p-2.5"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold">
+                          {entry.adherence === "on-plan"
+                            ? "On plan"
+                            : entry.adherence === "mostly-on-plan"
+                              ? "Mostly on plan"
+                              : "Off plan"}
+                        </p>
+                        <p className="text-xs text-zinc-500">
+                          {formatDateTime(entry.measuredAt)}
+                          {entry.sodiumAware ? " · sodium checked" : ""}
+                        </p>
+                      </div>
+                      <DeleteButton
+                        label="Delete diet check-in"
+                        onDelete={() =>
+                          confirmDelete("this diet check-in", () => onDeleteDiet(entry.id))
+                        }
+                      />
+                    </div>
+                  ))
+              ) : (
+                <p className="text-sm text-zinc-500">No diet check-ins yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <SettingsPanel settings={settings} onUpdate={onUpdateSettings} />
+
+      <section className="rounded-lg border border-zinc-200 bg-white p-4 text-xs leading-5 text-zinc-500">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+          <p>
+            This screen supports measurement and pattern review. It cannot diagnose a
+            condition, verify a cuff, or safely change medication. Bring the device and
+            full log to your clinician, and keep regular medical appointments.
+          </p>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+export default HealthTracker;

@@ -10,7 +10,9 @@ export function Providers({ children }: { children: ReactNode }) {
       <Toaster
         closeButton
         richColors
-        position="top-right"
+        position="top-center"
+        mobileOffset={16}
+        offset={16}
         toastOptions={{
           classNames: {
             toast: "font-sans",
