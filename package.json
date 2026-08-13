@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:sync": "node --test scripts/primary-sync-merge.test.mjs"
+    "test:sync": "node --test scripts/primary-sync-merge.test.mjs",
+    "test:health": "node --test scripts/health-schedule.test.mjs",
+    "test:health-data": "node --test scripts/health-data.test.mjs"
   },
   "dependencies": {
     "date-fns": "^4.4.0",

@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+/artifacts-*.png
 
 # debug
 npm-debug.log*

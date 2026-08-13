@@ -41,6 +41,12 @@ import { toast } from "sonner";
 import { MedTrackLoading } from "./med-track-loading";
 import HealthTracker from "./health-tracker";
 import {
+  averageBloodPressure,
+  careDayKeyForInstant,
+  entryCareDayKey,
+  evaluateHealthTasks,
+} from "./health-schedule";
+import {
   createDefaultHealthData,
   mergeHealthData,
   normalizeHealthData,
@@ -58,10 +64,12 @@ import type {
   WeekDay,
 } from "@/types";
 import type {
+  ActivityCheckIn,
   BloodPressureSession,
   DietCheckIn,
   HealthProfile,
   HealthSettings,
+  WaistEntry,
   WeightEntry,
 } from "@/types/health";
 
@@ -244,8 +252,8 @@ const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
 const HEALTH_DATA_STORAGE_KEY = "medtrack-health-data-v1";
+const HEALTH_REMINDER_HISTORY_STORAGE_KEY = "medtrack-health-reminder-history-v1";
 const PERSONAL_PLAN_VERSION = 6;
-const AUTO_ROLLOVER_HOUR = 12;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
   { id: "sunday", label: "Sunday", short: "Sun" },
@@ -899,17 +907,6 @@ function getDateKey(date: Date) {
   return format(date, "yyyy-MM-dd");
 }
 
-function getTehranDateKey(date: Date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tehran",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 function getTehranTime(date: Date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Tehran",
@@ -921,25 +918,39 @@ function getTehranTime(date: Date) {
   return `${values.hour}:${values.minute}`;
 }
 
+function showBrowserNotification(title: string, body: string) {
+  if (
+    typeof Notification === "undefined" ||
+    Notification.permission !== "granted"
+  ) {
+    return false;
+  }
+
+  try {
+    // The constructor is unsupported on several mobile browsers. Toasts remain
+    // the dependable foreground fallback until scheduled Web Push is added.
+    new Notification(title, { body });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function getDateFromKey(dateKey: string) {
   const date = parseISO(dateKey);
   return isValid(date) ? date : null;
 }
 
 function getDefaultCareDayKey(now: Date) {
-  return getDateKey(now.getHours() < AUTO_ROLLOVER_HOUR ? subDays(now, 1) : now);
+  return careDayKeyForInstant(now);
 }
 
 function getCareDayRolloverAt(careDayKey: string) {
-  const careDayDate = getDateFromKey(careDayKey);
-
-  if (!careDayDate) {
-    return null;
-  }
-
-  const rolloverAt = addDays(careDayDate, 1);
-  rolloverAt.setHours(AUTO_ROLLOVER_HOUR, 0, 0, 0);
-  return rolloverAt;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(careDayKey)) return null;
+  const [year, month, day] = careDayKey.split("-").map(Number);
+  const nextDate = new Date(Date.UTC(year, month - 1, day + 1));
+  const nextKey = nextDate.toISOString().slice(0, 10);
+  return new Date(`${nextKey}T12:00:00+03:30`);
 }
 
 function resolveCareDayKey(storedCareDayKey: string, now: Date) {
@@ -950,7 +961,7 @@ function resolveCareDayKey(storedCareDayKey: string, now: Date) {
     return getDefaultCareDayKey(now);
   }
 
-  if (storedCareDayDate.getTime() > addDays(now, 1).getTime()) {
+  if (storedCareDayKey > getNextCareDayKey(getDefaultCareDayKey(now))) {
     return getDefaultCareDayKey(now);
   }
 
@@ -2758,20 +2769,16 @@ export default function MedTrackApp() {
       careDayDate,
       todayKey,
     );
-    // Avoidance events are real-world occurrences, so they belong to the
-    // actual Tehran calendar day rather than the noon-based medication day.
-    const tehranDateKey = getTehranDateKey(today);
-    const tehranDate = getDateFromKey(tehranDateKey);
-    const avoidanceEntries = tehranDate
-      ? buildMedicationEntriesForDate(
-          activeMedications.filter(
-            (medication) => medication.trackingMode === "avoidance",
-          ),
-          logs,
-          tehranDate,
-          tehranDateKey,
-        )
-      : [];
+    // Avoidance outcomes use the same noon-to-noon Care Day as every other
+    // checklist item. `takenAt` still preserves the exact real-world instant.
+    const avoidanceEntries = buildMedicationEntriesForDate(
+      activeMedications.filter(
+        (medication) => medication.trackingMode === "avoidance",
+      ),
+      logs,
+      careDayDate,
+      todayKey,
+    );
 
     return [...completionEntries, ...avoidanceEntries];
   }, [activeMedications, careDayDate, logs, today, todayKey]);
@@ -2894,14 +2901,10 @@ export default function MedTrackApp() {
           `${group.routineCategoryName}: ${group.entries.length - group.takenCount} pending item(s)`,
         );
 
-        if (
-          typeof Notification !== "undefined" &&
-          Notification.permission === "granted"
-        ) {
-          new Notification("MedTrack reminder", {
-            body: `${group.routineCategoryName}: ${group.entries.length - group.takenCount} item(s) still pending.`,
-          });
-        }
+        showBrowserNotification(
+          "MedTrack reminder",
+          `${group.routineCategoryName}: ${group.entries.length - group.takenCount} item(s) still pending.`,
+        );
       });
   }, [
     isAuthenticated,
@@ -2914,104 +2917,140 @@ export default function MedTrackApp() {
   ]);
 
   useEffect(() => {
-    if (!isAuthenticated || !isStorageReady || !today) return;
+    if (!isAuthenticated || !isStorageReady || !today || !todayKey) return;
 
-    const dateKey = getTehranDateKey(today);
-    const currentTime = getTehranTime(today);
     const settings = healthData.settings;
-    const hasWeight = healthData.weightEntries.some(
-      (entry) => getTehranDateKey(new Date(entry.measuredAt)) === dateKey,
-    );
-    const hasDiet = healthData.dietCheckIns.some(
-      (entry) => getTehranDateKey(new Date(entry.measuredAt)) === dateKey,
-    );
-    const hasBloodPressure = (period: "morning" | "evening") =>
-      healthData.bloodPressureSessions.some(
-        (session) =>
-          session.period === period &&
-          getTehranDateKey(new Date(session.measuredAt)) === dateKey,
-      );
-    const inBloodPressureCycle =
-      dateKey >= settings.bpCycleStartDate && dateKey <= settings.bpCycleEndDate;
-    const [currentHour = 0, currentMinute = 0] = currentTime
-      .split(":")
-      .map(Number);
-    const [morningHour = 0, morningMinute = 0] = settings.bpMorningReminderTime
-      .split(":")
-      .map(Number);
-    const currentMinutes = currentHour * 60 + currentMinute;
-    const morningReminderMinutes = morningHour * 60 + morningMinute;
-    const isWithinMorningWindow =
-      currentMinutes >= morningReminderMinutes &&
-      currentMinutes <= morningReminderMinutes + 60;
-    const reminders: { id: string; due: boolean; title: string; body: string }[] = [
-      {
-        id: "bp-safety-start",
-        due: healthData.bloodPressureSessions.length === 0,
-        title: "Blood pressure check needed today",
-        body: "Because you have felt it may be high, rest five minutes and record two upper-arm readings now.",
-      },
-      {
-        id: "weight",
-        due:
-          settings.weightReminderEnabled &&
-          !hasWeight &&
-          currentTime >= settings.weightReminderTime,
+    const evaluation = evaluateHealthTasks({
+      now: today,
+      careDayKey: todayKey,
+      settings,
+      weightEntries: healthData.weightEntries,
+      bloodPressureSessions: healthData.bloodPressureSessions,
+      dietCheckIns: healthData.dietCheckIns,
+      waistEntries: healthData.waistEntries,
+      activityCheckIns: healthData.activityCheckIns,
+    });
+    const taskCopy = {
+      weight: {
         title: "Weight check due",
         body: "Weigh after the bathroom and before food or drink, under similar conditions.",
       },
-      {
-        id: "bp-morning",
-        due:
-          settings.bpReminderEnabled &&
-          inBloodPressureCycle &&
-          !hasBloodPressure("morning") &&
-          currentTime >= settings.bpMorningReminderTime,
-        title: isWithinMorningWindow
-          ? "Morning blood pressure due"
-          : "Morning blood pressure window missed",
-        body: isWithinMorningWindow
-          ? "Rest five minutes, then take two upper-arm readings at least one minute apart. Measure before medication only when that will not delay a scheduled dose; never delay or skip medication for a reading."
-          : "The planned morning window has passed. Take two rested readings when you can and record the actual time; never delay or skip medication for a reading.",
+      "blood-pressure-morning": {
+        title: "After-waking blood pressure due",
+        body: "Rest five minutes, then take two readings on the same upper arm one minute apart. A single reading can still be saved; never delay or skip medication for a reading.",
       },
-      {
-        id: "bp-evening",
-        due:
-          settings.bpReminderEnabled &&
-          inBloodPressureCycle &&
-          !hasBloodPressure("evening") &&
-          currentTime >= settings.bpEveningReminderTime,
-        title: "Evening blood pressure due",
-        body: "Rest five minutes, then take two readings at least one minute apart.",
+      "blood-pressure-evening": {
+        title: "Before-sleep blood pressure due",
+        body: "Rest five minutes, then take two readings on the same upper arm one minute apart.",
       },
-      {
-        id: "diet",
-        due:
-          settings.dietReminderEnabled &&
-          !hasDiet &&
-          currentTime >= settings.dietReminderTime,
+      diet: {
         title: "Diet check-in due",
-        body: "Record how closely you followed your plan today.",
+        body: "Record how closely you followed your plan this Care Day.",
       },
+      waist: {
+        title: "Waist measurement due",
+        body: "Measure at the same landmark and under similar conditions. The 14-Care-Day interval is a low-noise app reminder that you can adjust with your clinician.",
+      },
+      activity: {
+        title: "Activity review due",
+        body: "Record movement, strength sessions, sitting time, and how your conditioning feels.",
+      },
+    } as const;
+    const hasCurrentBloodPressureTask = evaluation.tasks.some(
+      (task) =>
+        task.kind.startsWith("blood-pressure") &&
+        (task.status === "due" ||
+          task.status === "partial" ||
+          task.severity === "urgent"),
+    );
+    const urgentBloodPressureTaskId =
+      evaluation.bloodPressurePlan.urgentPeriod === "evening"
+        ? "blood-pressure-evening"
+        : "blood-pressure-morning";
+    const reminders: {
+      id: string;
+      state: string;
+      due: boolean;
+      title: string;
+      body: string;
+    }[] = [
+      {
+        id: "bp-safety-start",
+        state: "initial",
+        due:
+          evaluation.bloodPressurePlan.active &&
+          healthData.bloodPressureSessions.length === 0 &&
+          !hasCurrentBloodPressureTask,
+        title: "Blood pressure check needed today",
+        body: "Because you have felt it may be high, rest five minutes and record two upper-arm readings now.",
+      },
+      ...evaluation.tasks
+        .filter(
+          (task) =>
+            task.severity !== "urgent" || task.id === urgentBloodPressureTaskId,
+        )
+        .map((task) => {
+        const copy = taskCopy[task.kind];
+        const isBloodPressure = task.kind.startsWith("blood-pressure");
+        const title = task.severity === "urgent"
+          ? "Urgent blood pressure review"
+          : task.status === "partial"
+            ? "Complete the blood pressure pair"
+            : task.reason === "incomplete-session-saved"
+              ? "Start a fresh blood pressure pair"
+            : task.reason === "restart-or-extend"
+              ? "Restart or extend blood pressure monitoring"
+              : task.reason === "multiple-missed-care-days"
+                ? `Blood pressure missing for ${evaluation.bloodPressurePlan.missingStreak} Care Days`
+                : copy.title;
+        const body = task.severity === "urgent"
+          ? "A severe reading was saved. Repeat after at least one minute; if it remains severe, contact a healthcare professional immediately. With warning symptoms, call emergency services now."
+          : task.status === "partial"
+            ? "One reading is safely saved. When possible, complete the same-arm pair after at least one minute."
+            : task.reason === "incomplete-session-saved"
+              ? "The earlier single reading remains in history, but its pairing window has ended. Start a fresh same-arm two-reading session."
+            : isBloodPressure && task.reason === "restart-or-extend"
+              ? "Several Care Days were missed. Start a fresh seven-Care-Day run or extend this one and share the results with your clinician."
+              : copy.body;
+        return {
+          id: task.id,
+          state: `${task.status}:${task.reason}`,
+          due:
+            task.status === "due" ||
+            task.status === "partial" ||
+            task.severity === "urgent",
+          title,
+          body,
+        };
+        }),
     ];
 
+    const persistedReminderKeys = new Set(
+      readStoredArray<string>(HEALTH_REMINDER_HISTORY_STORAGE_KEY, (value) =>
+        typeof value === "string" ? value : null,
+      ),
+    );
     reminders.filter((reminder) => reminder.due).forEach((reminder) => {
-      const notificationKey = `health:${dateKey}:${reminder.id}`;
-      if (notifiedReminderKeys.current.has(notificationKey)) return;
+      const notificationKey = `health:${todayKey}:${reminder.id}:${reminder.state}`;
+      if (
+        notifiedReminderKeys.current.has(notificationKey) ||
+        persistedReminderKeys.has(notificationKey)
+      ) {
+        return;
+      }
       notifiedReminderKeys.current.add(notificationKey);
+      persistedReminderKeys.add(notificationKey);
       toast.info(`${reminder.title}: ${reminder.body}`, { duration: 10000 });
 
-      if (
-        settings.browserNotifications &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted"
-      ) {
-        new Notification("MedTrack health reminder", {
-          body: reminder.body,
-        });
+      if (settings.browserNotifications) {
+        showBrowserNotification("MedTrack health reminder", reminder.body);
       }
     });
-  }, [healthData, isAuthenticated, isStorageReady, today]);
+    writeStoredArray(
+      HEALTH_REMINDER_HISTORY_STORAGE_KEY,
+      Array.from(persistedReminderKeys).slice(-120),
+    );
+  }, [healthData, isAuthenticated, isStorageReady, today, todayKey]);
 
   function updateHealthData(
     updater: (currentData: HealthSyncData, updatedAt: string) => HealthSyncData,
@@ -3021,11 +3060,28 @@ export default function MedTrackApp() {
   }
 
   function handleAddWeight(entry: WeightEntry) {
-    updateHealthData((currentData, updatedAt) => ({
-      ...currentData,
-      weightEntries: [entry, ...currentData.weightEntries],
-      updatedAt,
-    }));
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.weightEntries.find(
+        (currentEntry) => currentEntry.id === entry.id,
+      );
+      const nextEntry: WeightEntry = {
+        ...entry,
+        createdAt: existing?.createdAt ?? entry.createdAt,
+        careDayKey: careDayKeyForInstant(entry.measuredAt),
+        updatedAt,
+      };
+
+      return {
+        ...currentData,
+        weightEntries: [
+          nextEntry,
+          ...currentData.weightEntries.filter(
+            (currentEntry) => currentEntry.id !== entry.id,
+          ),
+        ],
+        updatedAt,
+      };
+    });
     toast.success("Weight recorded");
   }
 
@@ -3045,16 +3101,45 @@ export default function MedTrackApp() {
   }
 
   function handleAddBloodPressure(session: BloodPressureSession) {
-    updateHealthData((currentData, updatedAt) => ({
-      ...currentData,
-      bloodPressureSessions: [session, ...currentData.bloodPressureSessions],
-      updatedAt,
-    }));
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.bloodPressureSessions.find(
+        (currentSession) => currentSession.id === session.id,
+      );
+      const nextSession: BloodPressureSession = {
+        ...session,
+        createdAt: existing?.createdAt ?? session.createdAt,
+        careDayKey: careDayKeyForInstant(session.measuredAt),
+        updatedAt,
+      };
+
+      return {
+        ...currentData,
+        // A one-reading session can be completed later without creating a
+        // duplicate history row or losing its original creation timestamp.
+        bloodPressureSessions: [
+          nextSession,
+          ...currentData.bloodPressureSessions.filter(
+            (currentSession) => currentSession.id !== session.id,
+          ),
+        ],
+        updatedAt,
+      };
+    });
     const severeReadingCount = session.readings.filter(
       (reading) => reading.systolic >= 180 || reading.diastolic >= 120,
     ).length;
-    if (severeReadingCount > 0 && session.emergencySymptoms.length > 0) {
-      toast.error("Severe blood pressure with emergency symptoms recorded. Call your local emergency service now.", {
+    const emergencySymptomsNeedImmediateAction = session.emergencySymptoms.some(
+      (symptom) => symptom !== "back-pain",
+    );
+    if (
+      emergencySymptomsNeedImmediateAction ||
+      (severeReadingCount > 0 && session.emergencySymptoms.includes("back-pain"))
+    ) {
+      toast.error("Emergency warning symptoms recorded. Call your local emergency service now regardless of the pressure number.", {
+        duration: 15000,
+      });
+    } else if (severeReadingCount === 1 && session.readings.length === 1) {
+      toast.error("This reading is in the severe range. Wait at least one minute and repeat it; if it stays this high, contact a healthcare professional immediately. Call emergency services if warning symptoms appear.", {
         duration: 15000,
       });
     } else if (severeReadingCount === session.readings.length) {
@@ -3065,6 +3150,35 @@ export default function MedTrackApp() {
       toast.error("One of the two readings was severe. Follow the urgent guidance in Health and seek emergency help if symptoms appear.", {
         duration: 15000,
       });
+    } else if (
+      session.readings.some(
+        (reading) => reading.systolic < 90 || reading.diastolic < 60,
+      )
+    ) {
+      toast.warning(
+        session.symptoms.length > 0
+          ? "A low reading with symptoms was saved. Repeat carefully and contact your clinician promptly; seek urgent help for fainting, confusion, or severe symptoms. Do not change medicine yourself."
+          : "A low reading was saved. Repeat carefully; if it recurs or you feel dizzy, faint, confused, nauseated, or have blurred vision, contact your clinician promptly.",
+        { duration: 15000 },
+      );
+    } else if (
+      session.readings.length >= 2 &&
+      averageBloodPressure(session.readings) &&
+      ((averageBloodPressure(session.readings)?.systolic ?? 0) >=
+        healthData.settings.bpTargetSystolic ||
+        (averageBloodPressure(session.readings)?.diastolic ?? 0) >=
+          healthData.settings.bpTargetDiastolic)
+    ) {
+      toast.warning(
+        "This pair is above your configured home target. Keep the structured log; if the pattern recurs, share it with your prescriber. Do not adjust medicine yourself.",
+        { duration: 12000 },
+      );
+    } else if (session.readings.length === 1 && session.pairingClosedAt) {
+      toast.success(
+        "Single blood pressure reading kept. Start a fresh session when ready.",
+      );
+    } else if (session.readings.length === 1) {
+      toast.success("One blood pressure reading saved. Add the second after one minute when possible.");
     } else {
       toast.success("Blood pressure session recorded");
     }
@@ -3091,11 +3205,28 @@ export default function MedTrackApp() {
   }
 
   function handleAddDietCheckIn(checkIn: DietCheckIn) {
-    updateHealthData((currentData, updatedAt) => ({
-      ...currentData,
-      dietCheckIns: [checkIn, ...currentData.dietCheckIns],
-      updatedAt,
-    }));
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.dietCheckIns.find(
+        (currentEntry) => currentEntry.id === checkIn.id,
+      );
+      const nextEntry: DietCheckIn = {
+        ...checkIn,
+        createdAt: existing?.createdAt ?? checkIn.createdAt,
+        careDayKey: careDayKeyForInstant(checkIn.measuredAt),
+        updatedAt,
+      };
+
+      return {
+        ...currentData,
+        dietCheckIns: [
+          nextEntry,
+          ...currentData.dietCheckIns.filter(
+            (currentEntry) => currentEntry.id !== checkIn.id,
+          ),
+        ],
+        updatedAt,
+      };
+    });
     toast.success("Diet check-in saved");
   }
 
@@ -3112,6 +3243,124 @@ export default function MedTrackApp() {
       updatedAt,
     }));
     toast.success("Diet check-in deleted");
+  }
+
+  function handleAddWaist(entry: WaistEntry) {
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.waistEntries.find(
+        (currentEntry) => currentEntry.id === entry.id,
+      );
+      const nextEntry: WaistEntry = {
+        ...entry,
+        createdAt: existing?.createdAt ?? entry.createdAt,
+        careDayKey:
+          entry.measuredAtPrecision === "date"
+            ? entry.measuredAt.slice(0, 10)
+            : careDayKeyForInstant(entry.measuredAt),
+        updatedAt,
+      };
+      const allEntries = [
+        nextEntry,
+        ...currentData.waistEntries.filter(
+          (currentEntry) => currentEntry.id !== entry.id,
+        ),
+      ];
+      const latest = [...allEntries].sort(
+        (first, second) =>
+          Date.parse(second.measuredAt) - Date.parse(first.measuredAt),
+      )[0];
+
+      return {
+        ...currentData,
+        waistEntries: allEntries,
+        profile: {
+          ...currentData.profile,
+          waistCircumferenceCm: latest.waistCircumferenceCm,
+          waistMeasuredAt: latest.careDayKey ?? latest.measuredAt.slice(0, 10),
+          waistMeasurementMethod: latest.measurementMethod,
+        },
+        profileUpdatedAt: updatedAt,
+        updatedAt,
+      };
+    });
+    toast.success("Waist measurement saved");
+  }
+
+  function handleDeleteWaist(id: string) {
+    updateHealthData((currentData, updatedAt) => {
+      const remaining = currentData.waistEntries.filter((entry) => entry.id !== id);
+      const latest = [...remaining].sort(
+        (first, second) =>
+          Date.parse(second.measuredAt) - Date.parse(first.measuredAt),
+      )[0];
+      return {
+        ...currentData,
+        waistEntries: remaining,
+        deletedEntryIds: {
+          ...currentData.deletedEntryIds,
+          waistEntryIds: Array.from(
+            new Set([...currentData.deletedEntryIds.waistEntryIds, id]),
+          ),
+        },
+        ...(latest
+          ? {
+              profile: {
+                ...currentData.profile,
+                waistCircumferenceCm: latest.waistCircumferenceCm,
+                waistMeasuredAt:
+                  latest.careDayKey ?? latest.measuredAt.slice(0, 10),
+                waistMeasurementMethod: latest.measurementMethod,
+              },
+              profileUpdatedAt: updatedAt,
+            }
+          : {}),
+        updatedAt,
+      };
+    });
+    toast.success("Waist measurement deleted");
+  }
+
+  function handleAddActivityCheckIn(checkIn: ActivityCheckIn) {
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.activityCheckIns.find(
+        (currentEntry) => currentEntry.id === checkIn.id,
+      );
+      const nextEntry: ActivityCheckIn = {
+        ...checkIn,
+        createdAt: existing?.createdAt ?? checkIn.createdAt,
+        careDayKey: careDayKeyForInstant(checkIn.measuredAt),
+        updatedAt,
+      };
+
+      return {
+        ...currentData,
+        activityCheckIns: [
+          nextEntry,
+          ...currentData.activityCheckIns.filter(
+            (currentEntry) => currentEntry.id !== checkIn.id,
+          ),
+        ],
+        updatedAt,
+      };
+    });
+    toast.success("Activity check-in saved");
+  }
+
+  function handleDeleteActivityCheckIn(id: string) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      activityCheckIns: currentData.activityCheckIns.filter(
+        (entry) => entry.id !== id,
+      ),
+      deletedEntryIds: {
+        ...currentData.deletedEntryIds,
+        activityCheckInIds: Array.from(
+          new Set([...currentData.deletedEntryIds.activityCheckInIds, id]),
+        ),
+      },
+      updatedAt,
+    }));
+    toast.success("Activity check-in deleted");
   }
 
   async function handleUpdateHealthSettings(nextSettings: HealthSettings) {
@@ -3282,6 +3531,15 @@ export default function MedTrackApp() {
         ...currentSettings,
         browserNotifications: true,
       }));
+      updateHealthData((currentData, updatedAt) => ({
+        ...currentData,
+        settings: {
+          ...currentData.settings,
+          browserNotifications: true,
+        },
+        settingsUpdatedAt: updatedAt,
+        updatedAt,
+      }));
       toast.success("Browser reminders enabled");
       return;
     }
@@ -3298,6 +3556,15 @@ export default function MedTrackApp() {
     setReminderSettings((currentSettings) => ({
       ...currentSettings,
       browserNotifications: isEnabled,
+    }));
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      settings: {
+        ...currentData.settings,
+        browserNotifications: isEnabled,
+      },
+      settingsUpdatedAt: updatedAt,
+      updatedAt,
     }));
   }
 
@@ -3851,8 +4118,8 @@ export default function MedTrackApp() {
     }
 
     const now = new Date();
-    const occurrenceDateKey = getTehranDateKey(now);
-    const dedupeKey = `${entry.medication.id}:${occurrenceDateKey}:lapse`;
+    const occurrenceCareDayKey = entry.dateKey;
+    const dedupeKey = `${entry.medication.id}:${occurrenceCareDayKey}:lapse`;
 
     if (recordedAvoidanceKeys.current.has(dedupeKey)) {
       return;
@@ -3861,7 +4128,7 @@ export default function MedTrackApp() {
     const alreadyRecorded = logs.some(
       (log) =>
         log.medicationId === entry.medication.id &&
-        log.date === occurrenceDateKey &&
+        log.date === occurrenceCareDayKey &&
         log.status === "lapse",
     );
 
@@ -3888,7 +4155,7 @@ export default function MedTrackApp() {
       routineCategoryId: routineCategory.id,
       routineCategoryName: routineCategory.name,
       takenAt: now.toISOString(),
-      date: occurrenceDateKey,
+      date: occurrenceCareDayKey,
       status: "lapse",
       notes: "Hookah use reported at the time it happened.",
     };
@@ -4186,6 +4453,7 @@ export default function MedTrackApp() {
               reminderSettings={reminderSettings}
               healthData={healthData}
               now={today}
+              careDayKey={todayKey}
               categories={categories}
               routineCategories={routineCategories}
               onMarkAsTaken={handleMarkAsTaken}
@@ -4213,9 +4481,12 @@ export default function MedTrackApp() {
                 </div>
               )}
               <HealthTracker
+                careDayKey={todayKey}
                 weightEntries={healthData.weightEntries}
                 bloodPressureSessions={healthData.bloodPressureSessions}
                 dietCheckIns={healthData.dietCheckIns}
+                waistEntries={healthData.waistEntries}
+                activityCheckIns={healthData.activityCheckIns}
                 profile={healthData.profile}
                 settings={healthData.settings}
                 now={today}
@@ -4225,6 +4496,10 @@ export default function MedTrackApp() {
                 onDeleteBloodPressure={handleDeleteBloodPressure}
                 onAddDiet={handleAddDietCheckIn}
                 onDeleteDiet={handleDeleteDietCheckIn}
+                onAddWaist={handleAddWaist}
+                onDeleteWaist={handleDeleteWaist}
+                onAddActivity={handleAddActivityCheckIn}
+                onDeleteActivity={handleDeleteActivityCheckIn}
                 onUpdateProfile={handleUpdateHealthProfile}
                 onUpdateSettings={handleUpdateHealthSettings}
               />
@@ -4373,14 +4648,14 @@ function MobileNavigation({
 function DashboardHealthCard({
   healthData,
   now,
+  careDayKey,
   onOpenHealth,
 }: {
   healthData: HealthSyncData;
   now: Date;
+  careDayKey: string;
   onOpenHealth: () => void;
 }) {
-  const todayKey = getTehranDateKey(now);
-  const time = getTehranTime(now);
   const latestWeight = [...healthData.weightEntries].sort(
     (first, second) =>
       Date.parse(second.measuredAt) - Date.parse(first.measuredAt),
@@ -4389,62 +4664,50 @@ function DashboardHealthCard({
     (first, second) =>
       Date.parse(second.measuredAt) - Date.parse(first.measuredAt),
   )[0];
-  const hasWeightToday = healthData.weightEntries.some(
-    (entry) => getTehranDateKey(new Date(entry.measuredAt)) === todayKey,
-  );
-  const hasMorningBloodPressure = healthData.bloodPressureSessions.some(
-    (session) =>
-      session.period === "morning" &&
-      getTehranDateKey(new Date(session.measuredAt)) === todayKey,
-  );
-  const hasEveningBloodPressure = healthData.bloodPressureSessions.some(
-    (session) =>
-      session.period === "evening" &&
-      getTehranDateKey(new Date(session.measuredAt)) === todayKey,
-  );
-  const hasDietToday = healthData.dietCheckIns.some(
-    (entry) => getTehranDateKey(new Date(entry.measuredAt)) === todayKey,
-  );
-  const settings = healthData.settings;
-  const inCycle =
-    todayKey >= settings.bpCycleStartDate && todayKey <= settings.bpCycleEndDate;
-  const tasks = [
-    settings.weightReminderEnabled &&
-    !hasWeightToday &&
-    time >= settings.weightReminderTime
-      ? "Weight due"
-      : null,
-    settings.bpReminderEnabled &&
-    inCycle &&
-    !hasMorningBloodPressure &&
-    time >= settings.bpMorningReminderTime
-      ? "Morning BP due"
-      : null,
-    settings.bpReminderEnabled &&
-    inCycle &&
-    !hasEveningBloodPressure &&
-    time >= settings.bpEveningReminderTime
-      ? "Evening BP due"
-      : null,
-    settings.dietReminderEnabled &&
-    !hasDietToday &&
-    time >= settings.dietReminderTime
-      ? "Diet due"
-      : null,
-  ].filter((task): task is string => Boolean(task));
+  const evaluation = evaluateHealthTasks({
+    now,
+    careDayKey,
+    settings: healthData.settings,
+    weightEntries: healthData.weightEntries,
+    bloodPressureSessions: healthData.bloodPressureSessions,
+    dietCheckIns: healthData.dietCheckIns,
+    waistEntries: healthData.waistEntries,
+    activityCheckIns: healthData.activityCheckIns,
+  });
+  const taskLabels = {
+    weight: "Weight due",
+    "blood-pressure-morning": "After-waking BP due",
+    "blood-pressure-evening": "Before-sleep BP due",
+    diet: "Diet due",
+    waist: "Waist due",
+    activity: "Activity review due",
+  } as const;
+  const urgentBloodPressureTaskId =
+    evaluation.bloodPressurePlan.urgentPeriod === "evening"
+      ? "blood-pressure-evening"
+      : "blood-pressure-morning";
+  const tasks = evaluation.tasks
+    .filter(
+      (task) =>
+        task.severity !== "urgent" || task.id === urgentBloodPressureTaskId,
+    )
+    .flatMap((task) =>
+      task.status === "due" ||
+      task.status === "partial" ||
+      task.severity === "urgent"
+        ? [
+            task.severity === "urgent"
+              ? "Urgent BP review"
+              : task.status === "partial"
+                ? "Complete BP pair"
+                : task.reason === "incomplete-session-saved"
+                  ? "Start fresh BP pair"
+                : taskLabels[task.kind],
+          ]
+        : [],
+    );
   const average = latestBloodPressure
-    ? {
-        systolic: Math.round(
-          (latestBloodPressure.readings[0].systolic +
-            latestBloodPressure.readings[1].systolic) /
-            2,
-        ),
-        diastolic: Math.round(
-          (latestBloodPressure.readings[0].diastolic +
-            latestBloodPressure.readings[1].diastolic) /
-            2,
-        ),
-      }
+    ? averageBloodPressure(latestBloodPressure.readings)
     : null;
   const latestBloodPressureTime = latestBloodPressure
     ? Date.parse(latestBloodPressure.measuredAt)
@@ -4452,7 +4715,7 @@ function DashboardHealthCard({
   const latestBloodPressureAge = now.getTime() - latestBloodPressureTime;
   const latestBloodPressureIsCurrent = Boolean(
     latestBloodPressure &&
-      (getTehranDateKey(new Date(latestBloodPressure.measuredAt)) === todayKey ||
+      (entryCareDayKey(latestBloodPressure) === careDayKey ||
         (latestBloodPressureAge >= 0 &&
           latestBloodPressureAge <= 6 * 60 * 60 * 1000)),
   );
@@ -4625,6 +4888,7 @@ function DashboardView({
   reminderSettings,
   healthData,
   now,
+  careDayKey,
   categories,
   routineCategories,
   onMarkAsTaken,
@@ -4649,6 +4913,7 @@ function DashboardView({
   reminderSettings: ReminderSettings;
   healthData: HealthSyncData;
   now: Date;
+  careDayKey: string;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
@@ -4757,6 +5022,7 @@ function DashboardView({
       <DashboardHealthCard
         healthData={healthData}
         now={now}
+        careDayKey={careDayKey}
         onOpenHealth={onOpenHealth}
       />
 
@@ -6406,8 +6672,10 @@ function SettingsView({
                 </h2>
               </div>
               <p className="mt-1 max-w-2xl text-sm text-zinc-500">
-                In-app reminders always show as toast messages while MedTrack is
-                open. Browser notifications also work when permission is granted.
+                This switch covers medication and health alerts. In-app toasts and
+                supported foreground browser alerts work while MedTrack is open. A
+                closed or suspended mobile app cannot yet receive scheduled alerts
+                reliably.
               </p>
             </div>
 
@@ -6432,7 +6700,7 @@ function SettingsView({
                     onToggleBrowserNotifications(event.target.checked)
                   }
                 />
-                Browser alerts
+                Medication + health alerts
               </label>
             </div>
           </div>

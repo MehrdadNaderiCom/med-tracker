@@ -2,6 +2,7 @@ export interface WeightEntry {
   id: string;
   weightKg: number;
   measuredAt: string;
+  careDayKey?: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -11,9 +12,39 @@ export interface BloodPressureReading {
   systolic: number;
   diastolic: number;
   pulseBpm?: number;
+  /** Absent on legacy readings whose individual measurement time was not stored. */
+  measuredAt?: string;
 }
 
+export type BloodPressureReadings =
+  | [BloodPressureReading]
+  | [BloodPressureReading, BloodPressureReading];
+
 export type BloodPressurePeriod = "morning" | "evening" | "other";
+export type BloodPressureArm = "left" | "right" | "unknown";
+export type BloodPressurePosition = "seated" | "standing" | "lying" | "unknown";
+export type BloodPressureCuffSite = "upper-arm" | "wrist" | "other" | "unknown";
+export type BloodPressureMedicationTiming =
+  | "before-dose"
+  | "after-dose"
+  | "unknown";
+export type BloodPressureContextFlag =
+  | "caffeine"
+  | "nicotine"
+  | "exercise"
+  | "alcohol"
+  | "meal"
+  | "full-bladder"
+  | "talking"
+  | "not-rested"
+  | "other";
+export type BloodPressureSymptom =
+  | "dizziness"
+  | "fainting"
+  | "nausea"
+  | "confusion"
+  | "blurred-vision"
+  | "palpitations";
 
 export type BloodPressureEmergencySymptom =
   | "chest-pain"
@@ -27,9 +58,21 @@ export type BloodPressureEmergencySymptom =
 export interface BloodPressureSession {
   id: string;
   measuredAt: string;
+  careDayKey?: string;
+  /** Marks a saved single-reading session as intentionally closed. */
+  pairingClosedAt?: string;
   period: BloodPressurePeriod;
-  readings: [BloodPressureReading, BloodPressureReading];
+  readings: BloodPressureReadings;
+  arm: BloodPressureArm;
+  position: BloodPressurePosition;
+  cuffSite: BloodPressureCuffSite;
+  medicationTiming: BloodPressureMedicationTiming;
+  standardConditions: boolean | null;
+  contextFlags: BloodPressureContextFlag[];
+  symptoms: BloodPressureSymptom[];
   emergencySymptoms: BloodPressureEmergencySymptom[];
+  triggeredBySymptoms: boolean;
+  irregularHeartbeat: boolean | null;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -40,6 +83,7 @@ export type DietAdherence = "on-plan" | "mostly-on-plan" | "off-plan";
 export interface DietCheckIn {
   id: string;
   measuredAt: string;
+  careDayKey?: string;
   adherence: DietAdherence;
   sodiumAware: boolean;
   notes?: string;
@@ -57,6 +101,35 @@ export type WaistMeasurementMethod =
   | "unspecified"
   | "midpoint"
   | "other";
+
+export interface WaistEntry {
+  id: string;
+  waistCircumferenceCm: number;
+  /** ISO instant for new records; YYYY-MM-DD is retained for date-only legacy data. */
+  measuredAt: string;
+  measuredAtPrecision: "date" | "instant";
+  careDayKey?: string;
+  measurementMethod: WaistMeasurementMethod;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PerceivedConditioning = "better" | "same" | "worse";
+
+export interface ActivityCheckIn {
+  id: string;
+  measuredAt: string;
+  careDayKey?: string;
+  movementMinutes?: number;
+  strengthSessions?: number;
+  sedentaryHoursPerDay?: number;
+  perceivedConditioning?: PerceivedConditioning;
+  symptoms?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface HealthProfile {
   dateOfBirth: string;
@@ -81,8 +154,19 @@ export interface HealthSettings {
   bpEveningReminderTime: string;
   bpCycleStartDate: string;
   bpCycleEndDate: string;
+  preferredBpArm: BloodPressureArm;
+  bpTargetSystolic: number;
+  bpTargetDiastolic: number;
+  bpDeviceModel: string;
+  bpCuffSize: string;
   dietReminderEnabled: boolean;
   dietReminderTime: string;
+  waistReminderEnabled: boolean;
+  waistReminderTime: string;
+  waistReminderIntervalDays: number;
+  activityReminderEnabled: boolean;
+  activityReminderTime: string;
+  activityReminderIntervalDays: number;
   browserNotifications: boolean;
 }
 
@@ -90,4 +174,6 @@ export interface HealthDeletionTombstones {
   weightEntryIds: string[];
   bloodPressureSessionIds: string[];
   dietCheckInIds: string[];
+  waistEntryIds: string[];
+  activityCheckInIds: string[];
 }

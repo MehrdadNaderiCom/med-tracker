@@ -1,12 +1,22 @@
 import type {
+  ActivityCheckIn,
+  BloodPressureArm,
+  BloodPressureContextFlag,
+  BloodPressureCuffSite,
   BloodPressureEmergencySymptom,
+  BloodPressureMedicationTiming,
   BloodPressurePeriod,
+  BloodPressurePosition,
   BloodPressureSession,
+  BloodPressureSymptom,
   DietAdherence,
   DietCheckIn,
   HealthDeletionTombstones,
   HealthProfile,
   HealthSettings,
+  PerceivedConditioning,
+  WaistEntry,
+  WaistMeasurementMethod,
   WeightEntry,
 } from "@/types/health";
 
@@ -15,6 +25,8 @@ export type HealthSyncData = {
   weightEntries: WeightEntry[];
   bloodPressureSessions: BloodPressureSession[];
   dietCheckIns: DietCheckIn[];
+  waistEntries: WaistEntry[];
+  activityCheckIns: ActivityCheckIn[];
   deletedEntryIds: HealthDeletionTombstones;
   profile: HealthProfile;
   profileUpdatedAt: string;
@@ -23,8 +35,9 @@ export type HealthSyncData = {
   updatedAt: string;
 };
 
-export const HEALTH_SCHEMA_VERSION = 3;
+export const HEALTH_SCHEMA_VERSION = 4;
 export const BASELINE_WEIGHT_ENTRY_ID = "weight-baseline-2026-08-13-93-6";
+export const BASELINE_WAIST_ENTRY_ID = "waist-baseline-2026-08-13-115";
 
 const BASELINE_MEASURED_AT = "2026-08-13T00:00:00+03:30";
 const HEALTH_SYNC_EPOCH = "1970-01-01T00:00:00.000Z";
@@ -40,8 +53,19 @@ export const DEFAULT_HEALTH_SETTINGS: HealthSettings = {
   bpEveningReminderTime: "01:00",
   bpCycleStartDate: "2026-08-14",
   bpCycleEndDate: "2026-08-20",
+  preferredBpArm: "unknown",
+  bpTargetSystolic: 135,
+  bpTargetDiastolic: 85,
+  bpDeviceModel: "",
+  bpCuffSize: "",
   dietReminderEnabled: true,
   dietReminderTime: "23:00",
+  waistReminderEnabled: true,
+  waistReminderTime: "12:20",
+  waistReminderIntervalDays: 14,
+  activityReminderEnabled: true,
+  activityReminderTime: "22:30",
+  activityReminderIntervalDays: 7,
   browserNotifications: false,
 };
 
@@ -66,6 +90,27 @@ const EMERGENCY_SYMPTOMS = new Set<BloodPressureEmergencySymptom>([
   "weakness",
   "vision-change",
   "difficulty-speaking",
+]);
+
+const BP_CONTEXT_FLAGS = new Set<BloodPressureContextFlag>([
+  "caffeine",
+  "nicotine",
+  "exercise",
+  "alcohol",
+  "meal",
+  "full-bladder",
+  "talking",
+  "not-rested",
+  "other",
+]);
+
+const BP_SYMPTOMS = new Set<BloodPressureSymptom>([
+  "dizziness",
+  "fainting",
+  "nausea",
+  "confusion",
+  "blurred-vision",
+  "palpitations",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,10 +138,61 @@ function validTime(value: unknown) {
   return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
+function previousDateKey(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+/** Maps a real instant to the Tehran noon-to-noon Care Day that owns it. */
+export function getHealthCareDayKey(value: string | Date): string | null {
+  if (typeof value === "string" && validDateKey(value)) return value;
+  const instant = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(instant.getTime())) return null;
+
+  const parts = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone: "Asia/Tehran",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const valueOf = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  const dateKey = `${valueOf("year")}-${valueOf("month")}-${valueOf("day")}`;
+  const hour = Number(valueOf("hour"));
+  return hour < 12 ? previousDateKey(dateKey) : dateKey;
+}
+
+function normalizeCareDayKey(value: unknown, measuredAt: string) {
+  return validDateKey(value)
+    ? (value as string)
+    : (getHealthCareDayKey(measuredAt) ?? measuredAt.slice(0, 10));
+}
+
 function normalizeOptionalText(value: unknown) {
   return typeof value === "string" && value.trim()
     ? value.trim().slice(0, 2000)
     : undefined;
+}
+
+function normalizeShortText(value: unknown, maximum = 200) {
+  return typeof value === "string" ? value.trim().slice(0, maximum) : "";
+}
+
+function normalizeStringSet<T extends string>(value: unknown, allowed: Set<T>) {
+  return Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value.filter(
+            (item): item is T =>
+              typeof item === "string" && allowed.has(item as T),
+          ),
+        ),
+      )
+    : [];
 }
 
 function normalizeWeightEntry(value: unknown): WeightEntry | null {
@@ -117,6 +213,10 @@ function normalizeWeightEntry(value: unknown): WeightEntry | null {
     id: value.id,
     weightKg,
     measuredAt: value.measuredAt as string,
+    careDayKey:
+      value.id === BASELINE_WEIGHT_ENTRY_ID && !validDateKey(value.careDayKey)
+        ? DEFAULT_HEALTH_SETTINGS.baselineDate
+        : normalizeCareDayKey(value.careDayKey, value.measuredAt as string),
     notes: normalizeOptionalText(value.notes),
     createdAt: value.createdAt as string,
     updatedAt: value.updatedAt as string,
@@ -136,6 +236,9 @@ function normalizePressureReading(value: unknown) {
     systolic,
     diastolic,
     ...(pulseBpm === null ? {} : { pulseBpm }),
+    ...(validIso(value.measuredAt)
+      ? { measuredAt: value.measuredAt as string }
+      : {}),
   };
 }
 
@@ -143,8 +246,10 @@ function normalizeBloodPressureSession(
   value: unknown,
 ): BloodPressureSession | null {
   if (!isRecord(value) || !Array.isArray(value.readings)) return null;
-  const first = normalizePressureReading(value.readings[0]);
-  const second = normalizePressureReading(value.readings[1]);
+  const readings = value.readings.slice(0, 2).flatMap((reading) => {
+    const normalized = normalizePressureReading(reading);
+    return normalized ? [normalized] : [];
+  });
   const period: BloodPressurePeriod | null =
     value.period === "morning" ||
     value.period === "evening" ||
@@ -154,8 +259,7 @@ function normalizeBloodPressureSession(
   if (
     typeof value.id !== "string" ||
     !value.id ||
-    !first ||
-    !second ||
+    readings.length < 1 ||
     !period ||
     !validIso(value.measuredAt) ||
     !validIso(value.createdAt) ||
@@ -164,24 +268,61 @@ function normalizeBloodPressureSession(
     return null;
   }
 
-  const emergencySymptoms = Array.isArray(value.emergencySymptoms)
-    ? Array.from(
-        new Set(
-          value.emergencySymptoms.filter(
-            (item): item is BloodPressureEmergencySymptom =>
-              typeof item === "string" &&
-              EMERGENCY_SYMPTOMS.has(item as BloodPressureEmergencySymptom),
-          ),
-        ),
-      )
-    : [];
+  const emergencySymptoms = normalizeStringSet(
+    value.emergencySymptoms,
+    EMERGENCY_SYMPTOMS,
+  );
+  const arm: BloodPressureArm =
+    value.arm === "left" || value.arm === "right" ? value.arm : "unknown";
+  const position: BloodPressurePosition =
+    value.position === "seated" ||
+    value.position === "standing" ||
+    value.position === "lying"
+      ? value.position
+      : "unknown";
+  const cuffSite: BloodPressureCuffSite =
+    value.cuffSite === "upper-arm" ||
+    value.cuffSite === "wrist" ||
+    value.cuffSite === "other"
+      ? value.cuffSite
+      : "unknown";
+  const medicationTiming: BloodPressureMedicationTiming =
+    value.medicationTiming === "before-dose" ||
+    value.medicationTiming === "after-dose"
+      ? value.medicationTiming
+      : "unknown";
 
   return {
     id: value.id,
     measuredAt: value.measuredAt as string,
+    careDayKey: normalizeCareDayKey(
+      value.careDayKey,
+      value.measuredAt as string,
+    ),
+    ...(validIso(value.pairingClosedAt)
+      ? { pairingClosedAt: value.pairingClosedAt as string }
+      : {}),
     period,
-    readings: [first, second],
+    readings:
+      readings.length === 1
+        ? [readings[0]]
+        : [readings[0], readings[1]],
+    arm,
+    position,
+    cuffSite,
+    medicationTiming,
+    standardConditions:
+      typeof value.standardConditions === "boolean"
+        ? value.standardConditions
+        : null,
+    contextFlags: normalizeStringSet(value.contextFlags, BP_CONTEXT_FLAGS),
+    symptoms: normalizeStringSet(value.symptoms, BP_SYMPTOMS),
     emergencySymptoms,
+    triggeredBySymptoms: value.triggeredBySymptoms === true,
+    irregularHeartbeat:
+      typeof value.irregularHeartbeat === "boolean"
+        ? value.irregularHeartbeat
+        : null,
     notes: normalizeOptionalText(value.notes),
     createdAt: value.createdAt as string,
     updatedAt: value.updatedAt as string,
@@ -210,8 +351,88 @@ function normalizeDietCheckIn(value: unknown): DietCheckIn | null {
   return {
     id: value.id,
     measuredAt: value.measuredAt as string,
+    careDayKey: normalizeCareDayKey(
+      value.careDayKey,
+      value.measuredAt as string,
+    ),
     adherence,
     sodiumAware: value.sodiumAware === true,
+    notes: normalizeOptionalText(value.notes),
+    createdAt: value.createdAt as string,
+    updatedAt: value.updatedAt as string,
+  };
+}
+
+function normalizeWaistEntry(value: unknown): WaistEntry | null {
+  if (!isRecord(value)) return null;
+  const waistCircumferenceCm = finiteNumber(
+    value.waistCircumferenceCm,
+    30,
+    250,
+  );
+  const measuredAtIsDate = validDateKey(value.measuredAt);
+  if (
+    typeof value.id !== "string" ||
+    !value.id ||
+    waistCircumferenceCm === null ||
+    (!measuredAtIsDate && !validIso(value.measuredAt)) ||
+    !validIso(value.createdAt) ||
+    !validIso(value.updatedAt)
+  ) {
+    return null;
+  }
+  const measurementMethod: WaistMeasurementMethod =
+    value.measurementMethod === "midpoint" || value.measurementMethod === "other"
+      ? value.measurementMethod
+      : "unspecified";
+  const measuredAt = value.measuredAt as string;
+
+  return {
+    id: value.id,
+    waistCircumferenceCm,
+    measuredAt,
+    measuredAtPrecision: measuredAtIsDate ? "date" : "instant",
+    careDayKey: normalizeCareDayKey(value.careDayKey, measuredAt),
+    measurementMethod,
+    notes: normalizeOptionalText(value.notes),
+    createdAt: value.createdAt as string,
+    updatedAt: value.updatedAt as string,
+  };
+}
+
+function normalizeActivityCheckIn(value: unknown): ActivityCheckIn | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !value.id ||
+    !validIso(value.measuredAt) ||
+    !validIso(value.createdAt) ||
+    !validIso(value.updatedAt)
+  ) {
+    return null;
+  }
+  const movementMinutes = finiteNumber(value.movementMinutes, 0, 10_080);
+  const strengthSessions = finiteNumber(value.strengthSessions, 0, 7);
+  const sedentaryHoursPerDay = finiteNumber(value.sedentaryHoursPerDay, 0, 24);
+  const perceivedConditioning: PerceivedConditioning | undefined =
+    value.perceivedConditioning === "better" ||
+    value.perceivedConditioning === "same" ||
+    value.perceivedConditioning === "worse"
+      ? value.perceivedConditioning
+      : undefined;
+  const measuredAt = value.measuredAt as string;
+
+  return {
+    id: value.id,
+    measuredAt,
+    careDayKey: normalizeCareDayKey(value.careDayKey, measuredAt),
+    ...(movementMinutes === null ? {} : { movementMinutes }),
+    ...(strengthSessions === null
+      ? {}
+      : { strengthSessions: Math.round(strengthSessions) }),
+    ...(sedentaryHoursPerDay === null ? {} : { sedentaryHoursPerDay }),
+    ...(perceivedConditioning ? { perceivedConditioning } : {}),
+    symptoms: normalizeOptionalText(value.symptoms),
     notes: normalizeOptionalText(value.notes),
     createdAt: value.createdAt as string,
     updatedAt: value.updatedAt as string,
@@ -230,6 +451,8 @@ function normalizeTombstones(value: unknown): HealthDeletionTombstones {
     weightEntryIds: normalizeIds(source.weightEntryIds),
     bloodPressureSessionIds: normalizeIds(source.bloodPressureSessionIds),
     dietCheckInIds: normalizeIds(source.dietCheckInIds),
+    waistEntryIds: normalizeIds(source.waistEntryIds),
+    activityCheckInIds: normalizeIds(source.activityCheckInIds),
   };
 }
 
@@ -237,6 +460,18 @@ function normalizeSettings(value: unknown): HealthSettings {
   const source = isRecord(value) ? value : {};
   const baselineWeightKg = finiteNumber(source.baselineWeightKg, 25, 350);
   const goalWeightKg = finiteNumber(source.goalWeightKg, 25, 350);
+  const bpTargetSystolic = finiteNumber(source.bpTargetSystolic, 80, 220);
+  const bpTargetDiastolic = finiteNumber(source.bpTargetDiastolic, 40, 140);
+  const waistReminderIntervalDays = finiteNumber(
+    source.waistReminderIntervalDays,
+    1,
+    365,
+  );
+  const activityReminderIntervalDays = finiteNumber(
+    source.activityReminderIntervalDays,
+    1,
+    365,
+  );
 
   return {
     baselineWeightKg: baselineWeightKg ?? DEFAULT_HEALTH_SETTINGS.baselineWeightKg,
@@ -261,10 +496,36 @@ function normalizeSettings(value: unknown): HealthSettings {
     bpCycleEndDate: validDateKey(source.bpCycleEndDate)
       ? (source.bpCycleEndDate as string)
       : DEFAULT_HEALTH_SETTINGS.bpCycleEndDate,
+    preferredBpArm:
+      source.preferredBpArm === "left" || source.preferredBpArm === "right"
+        ? source.preferredBpArm
+        : "unknown",
+    bpTargetSystolic:
+      bpTargetSystolic ?? DEFAULT_HEALTH_SETTINGS.bpTargetSystolic,
+    bpTargetDiastolic:
+      bpTargetDiastolic ?? DEFAULT_HEALTH_SETTINGS.bpTargetDiastolic,
+    bpDeviceModel: normalizeShortText(source.bpDeviceModel),
+    bpCuffSize: normalizeShortText(source.bpCuffSize),
     dietReminderEnabled: source.dietReminderEnabled !== false,
     dietReminderTime: validTime(source.dietReminderTime)
       ? (source.dietReminderTime as string)
       : DEFAULT_HEALTH_SETTINGS.dietReminderTime,
+    waistReminderEnabled: source.waistReminderEnabled !== false,
+    waistReminderTime: validTime(source.waistReminderTime)
+      ? (source.waistReminderTime as string)
+      : DEFAULT_HEALTH_SETTINGS.waistReminderTime,
+    waistReminderIntervalDays: Math.round(
+      waistReminderIntervalDays ??
+        DEFAULT_HEALTH_SETTINGS.waistReminderIntervalDays,
+    ),
+    activityReminderEnabled: source.activityReminderEnabled !== false,
+    activityReminderTime: validTime(source.activityReminderTime)
+      ? (source.activityReminderTime as string)
+      : DEFAULT_HEALTH_SETTINGS.activityReminderTime,
+    activityReminderIntervalDays: Math.round(
+      activityReminderIntervalDays ??
+        DEFAULT_HEALTH_SETTINGS.activityReminderIntervalDays,
+    ),
     browserNotifications: source.browserNotifications === true,
   };
 }
@@ -325,11 +586,28 @@ function mergeRecordsById<T extends { id: string; updatedAt: string }>(
   for (const record of [...first, ...second]) {
     if (deleted.has(record.id)) continue;
     const current = byId.get(record.id);
-    if (!current || Date.parse(record.updatedAt) >= Date.parse(current.updatedAt)) {
+    if (!current || Date.parse(record.updatedAt) > Date.parse(current.updatedAt)) {
       byId.set(record.id, record);
     }
   }
   return Array.from(byId.values());
+}
+
+function createProfileWaistBaseline(
+  profile: HealthProfile,
+  createdAt: string,
+): WaistEntry {
+  return {
+    id: BASELINE_WAIST_ENTRY_ID,
+    waistCircumferenceCm: profile.waistCircumferenceCm,
+    measuredAt: profile.waistMeasuredAt,
+    measuredAtPrecision: "date",
+    careDayKey: profile.waistMeasuredAt,
+    measurementMethod: profile.waistMeasurementMethod,
+    notes: "Baseline supplied by the user; exact measurement time was not recorded.",
+    createdAt,
+    updatedAt: createdAt,
+  };
 }
 
 export function createDefaultHealthData(now = new Date()): HealthSyncData {
@@ -341,17 +619,26 @@ export function createDefaultHealthData(now = new Date()): HealthSyncData {
         id: BASELINE_WEIGHT_ENTRY_ID,
         weightKg: 93.6,
         measuredAt: BASELINE_MEASURED_AT,
+        careDayKey: DEFAULT_HEALTH_SETTINGS.baselineDate,
         notes: "Baseline supplied by the user; exact measurement time was not recorded.",
-        createdAt,
-        updatedAt: createdAt,
+        // Seed freshness must never outrank an actual cloud migration on a new
+        // browser merely because this fallback was constructed later.
+        createdAt: HEALTH_SYNC_EPOCH,
+        updatedAt: HEALTH_SYNC_EPOCH,
       },
     ],
     bloodPressureSessions: [],
     dietCheckIns: [],
+    waistEntries: [
+      createProfileWaistBaseline(DEFAULT_HEALTH_PROFILE, HEALTH_SYNC_EPOCH),
+    ],
+    activityCheckIns: [],
     deletedEntryIds: {
       weightEntryIds: [],
       bloodPressureSessionIds: [],
       dietCheckInIds: [],
+      waistEntryIds: [],
+      activityCheckInIds: [],
     },
     profile: { ...DEFAULT_HEALTH_PROFILE },
     // The seeded profile is a migration fallback until it is explicitly stored.
@@ -385,6 +672,7 @@ export function normalizeHealthData(
     schemaVersion < 2 &&
     !tombstones.weightEntryIds.includes(BASELINE_WEIGHT_ENTRY_ID) &&
     !weights.some((entry) => entry.id === BASELINE_WEIGHT_ENTRY_ID);
+  const profile = normalizeProfile(value.profile);
   const legacySettingsUpdatedAt =
     "settings" in value && validIso(value.updatedAt)
       ? (value.updatedAt as string)
@@ -393,6 +681,25 @@ export function normalizeHealthData(
     "profile" in value && validIso(value.updatedAt)
       ? (value.updatedAt as string)
       : HEALTH_SYNC_EPOCH;
+  const profileUpdatedAt = validIso(value.profileUpdatedAt)
+    ? (value.profileUpdatedAt as string)
+    : legacyProfileUpdatedAt;
+  const waistEntries = Array.isArray(value.waistEntries)
+    ? value.waistEntries.flatMap((entry) => {
+        const normalized = normalizeWaistEntry(entry);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  const shouldSeedWaistBaseline =
+    schemaVersion < 4 &&
+    !tombstones.waistEntryIds.includes(BASELINE_WAIST_ENTRY_ID) &&
+    !waistEntries.some((entry) => entry.id === BASELINE_WAIST_ENTRY_ID);
+  const waistSeedTimestamp =
+    profileUpdatedAt !== HEALTH_SYNC_EPOCH
+      ? profileUpdatedAt
+      : validIso(value.updatedAt)
+        ? (value.updatedAt as string)
+        : fallback.updatedAt;
 
   return {
     schemaVersion: HEALTH_SCHEMA_VERSION,
@@ -414,11 +721,23 @@ export function normalizeHealthData(
         })
       : []
     ).filter((entry) => !tombstones.dietCheckInIds.includes(entry.id)),
+    waistEntries: (shouldSeedWaistBaseline
+      ? [
+          createProfileWaistBaseline(profile, waistSeedTimestamp),
+          ...waistEntries,
+        ]
+      : waistEntries
+    ).filter((entry) => !tombstones.waistEntryIds.includes(entry.id)),
+    activityCheckIns: (Array.isArray(value.activityCheckIns)
+      ? value.activityCheckIns.flatMap((entry) => {
+          const normalized = normalizeActivityCheckIn(entry);
+          return normalized ? [normalized] : [];
+        })
+      : []
+    ).filter((entry) => !tombstones.activityCheckInIds.includes(entry.id)),
     deletedEntryIds: tombstones,
-    profile: normalizeProfile(value.profile),
-    profileUpdatedAt: validIso(value.profileUpdatedAt)
-      ? (value.profileUpdatedAt as string)
-      : legacyProfileUpdatedAt,
+    profile,
+    profileUpdatedAt,
     settings: normalizeSettings(value.settings),
     settingsUpdatedAt: validIso(value.settingsUpdatedAt)
       ? (value.settingsUpdatedAt as string)
@@ -446,6 +765,18 @@ export function mergeHealthData(
     dietCheckInIds: Array.from(
       new Set([...cloud.deletedEntryIds.dietCheckInIds, ...local.deletedEntryIds.dietCheckInIds]),
     ),
+    waistEntryIds: Array.from(
+      new Set([
+        ...cloud.deletedEntryIds.waistEntryIds,
+        ...local.deletedEntryIds.waistEntryIds,
+      ]),
+    ),
+    activityCheckInIds: Array.from(
+      new Set([
+        ...cloud.deletedEntryIds.activityCheckInIds,
+        ...local.deletedEntryIds.activityCheckInIds,
+      ]),
+    ),
   };
   const cloudSettingsAreNewer =
     Date.parse(cloud.settingsUpdatedAt) >= Date.parse(local.settingsUpdatedAt);
@@ -469,6 +800,16 @@ export function mergeHealthData(
       cloud.dietCheckIns,
       local.dietCheckIns,
       deletedEntryIds.dietCheckInIds,
+    ),
+    waistEntries: mergeRecordsById(
+      cloud.waistEntries,
+      local.waistEntries,
+      deletedEntryIds.waistEntryIds,
+    ),
+    activityCheckIns: mergeRecordsById(
+      cloud.activityCheckIns,
+      local.activityCheckIns,
+      deletedEntryIds.activityCheckInIds,
     ),
     deletedEntryIds,
     profile: cloudProfileIsNewer ? cloud.profile : local.profile,

@@ -17,6 +17,8 @@ type DeletedEntryIds = {
   weightEntryIds: string[];
   bloodPressureSessionIds: string[];
   dietCheckInIds: string[];
+  waistEntryIds: string[];
+  activityCheckInIds: string[];
 };
 
 type HealthSyncData = {
@@ -24,6 +26,8 @@ type HealthSyncData = {
   weightEntries: JsonRecord[];
   bloodPressureSessions: JsonRecord[];
   dietCheckIns: JsonRecord[];
+  waistEntries: JsonRecord[];
+  activityCheckIns: JsonRecord[];
   deletedEntryIds: DeletedEntryIds;
   profile?: unknown;
   profileUpdatedAt?: string;
@@ -135,7 +139,7 @@ function normalizeTimestamp(value: unknown, fallback = HEALTH_SYNC_EPOCH) {
     : fallback;
 }
 
-function normalizeEntries(value: unknown) {
+function normalizeEntries(value: unknown): JsonRecord[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -147,6 +151,21 @@ function normalizeEntries(value: unknown) {
 
     const id = entry.id.trim();
     return id ? [{ ...entry, id }] : [];
+  });
+}
+
+function normalizeBloodPressureEntries(value: unknown) {
+  return normalizeEntries(value).map((entry) => {
+    if (
+      typeof entry.pairingClosedAt === "string" &&
+      Number.isFinite(Date.parse(entry.pairingClosedAt))
+    ) {
+      return entry;
+    }
+
+    const normalized = { ...entry };
+    delete normalized.pairingClosedAt;
+    return normalized;
   });
 }
 
@@ -173,6 +192,8 @@ function normalizeDeletedEntryIds(value: unknown): DeletedEntryIds {
       deletedEntryIds.bloodPressureSessionIds,
     ),
     dietCheckInIds: normalizeIdList(deletedEntryIds.dietCheckInIds),
+    waistEntryIds: normalizeIdList(deletedEntryIds.waistEntryIds),
+    activityCheckInIds: normalizeIdList(deletedEntryIds.activityCheckInIds),
   };
 }
 
@@ -190,8 +211,12 @@ function normalizeHealthSyncData(value: unknown): NormalizedHealthSyncData {
   return {
     schemaVersion: normalizeSchemaVersion(data.schemaVersion),
     weightEntries: normalizeEntries(data.weightEntries),
-    bloodPressureSessions: normalizeEntries(data.bloodPressureSessions),
+    bloodPressureSessions: normalizeBloodPressureEntries(
+      data.bloodPressureSessions,
+    ),
     dietCheckIns: normalizeEntries(data.dietCheckIns),
+    waistEntries: normalizeEntries(data.waistEntries),
+    activityCheckIns: normalizeEntries(data.activityCheckIns),
     deletedEntryIds: normalizeDeletedEntryIds(data.deletedEntryIds),
     profile: "profile" in data ? data.profile : {},
     profileUpdatedAt: normalizeTimestamp(
@@ -234,7 +259,7 @@ function mergeEntries(
 
     if (
       !currentEntry ||
-      getUpdatedAtTimestamp(entry) >= getUpdatedAtTimestamp(currentEntry)
+      getUpdatedAtTimestamp(entry) > getUpdatedAtTimestamp(currentEntry)
     ) {
       entriesById.set(id, entry);
     }
@@ -260,7 +285,22 @@ function mergeDeletedEntryIds(
     dietCheckInIds: Array.from(
       new Set([...existing.dietCheckInIds, ...incoming.dietCheckInIds]),
     ),
+    waistEntryIds: Array.from(
+      new Set([...existing.waistEntryIds, ...incoming.waistEntryIds]),
+    ),
+    activityCheckInIds: Array.from(
+      new Set([
+        ...existing.activityCheckInIds,
+        ...incoming.activityCheckInIds,
+      ]),
+    ),
   };
+}
+
+function mergeDocumentFields(existing: unknown, incoming: unknown) {
+  const existingFields = isRecord(existing) ? existing : {};
+  const incomingFields = isRecord(incoming) ? incoming : {};
+  return { ...existingFields, ...incomingFields };
 }
 
 function mergeHealthSyncData(
@@ -282,12 +322,18 @@ function mergeHealthSyncData(
   const profileFields =
     existingHasProfile || incomingHasProfile
       ? {
-          profile: incomingProfileWins ? incoming.profile : existing.profile,
+          profile: incomingProfileWins
+            ? mergeDocumentFields(existing.profile, incoming.profile)
+            : existing.profile,
           profileUpdatedAt: incomingProfileWins
             ? incoming.profileUpdatedAt
             : existing.profileUpdatedAt,
         }
       : {};
+  const incomingSettingsWins =
+    !hasExistingData ||
+    Date.parse(incoming.settingsUpdatedAt) >
+      Date.parse(existing.settingsUpdatedAt);
   const deletedEntryIds = mergeDeletedEntryIds(
     existing.deletedEntryIds,
     incoming.deletedEntryIds,
@@ -310,23 +356,27 @@ function mergeHealthSyncData(
       incoming.dietCheckIns,
       new Set(deletedEntryIds.dietCheckInIds),
     ),
+    waistEntries: mergeEntries(
+      existing.waistEntries,
+      incoming.waistEntries,
+      new Set(deletedEntryIds.waistEntryIds),
+    ),
+    activityCheckIns: mergeEntries(
+      existing.activityCheckIns,
+      incoming.activityCheckIns,
+      new Set(deletedEntryIds.activityCheckInIds),
+    ),
     deletedEntryIds,
-    // Profile is an independent last-write-wins document. Crucially, payloads
-    // from schema-v2 clients omit it and therefore cannot erase a stored profile
-    // or materialize an empty placeholder that blocks a v3 client's first seed.
+    // Profile is an independent last-write-wins document. Older payloads that
+    // omit it cannot erase a stored profile, and a newer legacy document only
+    // overlays fields it actually knows about.
     ...profileFields,
-    settings:
-      !hasExistingData ||
-      Date.parse(incoming.settingsUpdatedAt) >
-        Date.parse(existing.settingsUpdatedAt)
-        ? incoming.settings
-        : existing.settings,
-    settingsUpdatedAt:
-      !hasExistingData ||
-      Date.parse(incoming.settingsUpdatedAt) >
-        Date.parse(existing.settingsUpdatedAt)
-        ? incoming.settingsUpdatedAt
-        : existing.settingsUpdatedAt,
+    settings: incomingSettingsWins
+      ? mergeDocumentFields(existing.settings, incoming.settings)
+      : existing.settings,
+    settingsUpdatedAt: incomingSettingsWins
+      ? incoming.settingsUpdatedAt
+      : existing.settingsUpdatedAt,
     updatedAt: savedAt,
   };
 }
