@@ -5,6 +5,7 @@ import type {
   DietAdherence,
   DietCheckIn,
   HealthDeletionTombstones,
+  HealthProfile,
   HealthSettings,
   WeightEntry,
 } from "@/types/health";
@@ -15,12 +16,14 @@ export type HealthSyncData = {
   bloodPressureSessions: BloodPressureSession[];
   dietCheckIns: DietCheckIn[];
   deletedEntryIds: HealthDeletionTombstones;
+  profile: HealthProfile;
+  profileUpdatedAt: string;
   settings: HealthSettings;
   settingsUpdatedAt: string;
   updatedAt: string;
 };
 
-export const HEALTH_SCHEMA_VERSION = 2;
+export const HEALTH_SCHEMA_VERSION = 3;
 export const BASELINE_WEIGHT_ENTRY_ID = "weight-baseline-2026-08-13-93-6";
 
 const BASELINE_MEASURED_AT = "2026-08-13T00:00:00+03:30";
@@ -40,6 +43,19 @@ export const DEFAULT_HEALTH_SETTINGS: HealthSettings = {
   dietReminderEnabled: true,
   dietReminderTime: "23:00",
   browserNotifications: false,
+};
+
+export const DEFAULT_HEALTH_PROFILE: HealthProfile = {
+  dateOfBirth: "1990-08-10",
+  heightCm: 179,
+  waistCircumferenceCm: 115,
+  waistMeasuredAt: "2026-08-13",
+  waistMeasurementMethod: "unspecified",
+  activityLevel: "sedentary",
+  activityNotes:
+    "Self-reported long-term muscle weakness after years of desk work, with very little movement and no regular exercise.",
+  dietClinicianName: "دکتر جهانگیری",
+  dietStartDate: "2026-08-13",
 };
 
 const EMERGENCY_SYMPTOMS = new Set<BloodPressureEmergencySymptom>([
@@ -253,6 +269,52 @@ function normalizeSettings(value: unknown): HealthSettings {
   };
 }
 
+function normalizeProfile(value: unknown): HealthProfile {
+  const source = isRecord(value) ? value : {};
+  const heightCm = finiteNumber(source.heightCm, 100, 250);
+  const waistCircumferenceCm = finiteNumber(
+    source.waistCircumferenceCm,
+    30,
+    250,
+  );
+  const waistMeasurementMethod =
+    source.waistMeasurementMethod === "midpoint" ||
+    source.waistMeasurementMethod === "other" ||
+    source.waistMeasurementMethod === "unspecified"
+      ? source.waistMeasurementMethod
+      : DEFAULT_HEALTH_PROFILE.waistMeasurementMethod;
+  const activityLevel =
+    source.activityLevel === "light" ||
+    source.activityLevel === "moderate" ||
+    source.activityLevel === "high" ||
+    source.activityLevel === "sedentary"
+      ? source.activityLevel
+      : DEFAULT_HEALTH_PROFILE.activityLevel;
+
+  return {
+    dateOfBirth: validDateKey(source.dateOfBirth)
+      ? (source.dateOfBirth as string)
+      : DEFAULT_HEALTH_PROFILE.dateOfBirth,
+    heightCm: heightCm ?? DEFAULT_HEALTH_PROFILE.heightCm,
+    waistCircumferenceCm:
+      waistCircumferenceCm ?? DEFAULT_HEALTH_PROFILE.waistCircumferenceCm,
+    waistMeasuredAt: validDateKey(source.waistMeasuredAt)
+      ? (source.waistMeasuredAt as string)
+      : DEFAULT_HEALTH_PROFILE.waistMeasuredAt,
+    waistMeasurementMethod,
+    activityLevel,
+    activityNotes:
+      normalizeOptionalText(source.activityNotes) ??
+      DEFAULT_HEALTH_PROFILE.activityNotes,
+    dietClinicianName:
+      normalizeOptionalText(source.dietClinicianName) ??
+      DEFAULT_HEALTH_PROFILE.dietClinicianName,
+    dietStartDate: validDateKey(source.dietStartDate)
+      ? (source.dietStartDate as string)
+      : DEFAULT_HEALTH_PROFILE.dietStartDate,
+  };
+}
+
 function mergeRecordsById<T extends { id: string; updatedAt: string }>(
   first: T[],
   second: T[],
@@ -291,6 +353,10 @@ export function createDefaultHealthData(now = new Date()): HealthSyncData {
       bloodPressureSessionIds: [],
       dietCheckInIds: [],
     },
+    profile: { ...DEFAULT_HEALTH_PROFILE },
+    // The seeded profile is a migration fallback until it is explicitly stored.
+    // The epoch lets an already-edited cloud profile win on a new browser.
+    profileUpdatedAt: HEALTH_SYNC_EPOCH,
     settings: DEFAULT_HEALTH_SETTINGS,
     // A newly-created local fallback has never had its settings edited. Keeping
     // this at the epoch prevents a fresh browser from outranking cloud settings.
@@ -316,11 +382,15 @@ export function normalizeHealthData(
       })
     : [];
   const shouldSeedBaseline =
-    schemaVersion < HEALTH_SCHEMA_VERSION &&
+    schemaVersion < 2 &&
     !tombstones.weightEntryIds.includes(BASELINE_WEIGHT_ENTRY_ID) &&
     !weights.some((entry) => entry.id === BASELINE_WEIGHT_ENTRY_ID);
   const legacySettingsUpdatedAt =
     "settings" in value && validIso(value.updatedAt)
+      ? (value.updatedAt as string)
+      : HEALTH_SYNC_EPOCH;
+  const legacyProfileUpdatedAt =
+    "profile" in value && validIso(value.updatedAt)
       ? (value.updatedAt as string)
       : HEALTH_SYNC_EPOCH;
 
@@ -345,6 +415,10 @@ export function normalizeHealthData(
       : []
     ).filter((entry) => !tombstones.dietCheckInIds.includes(entry.id)),
     deletedEntryIds: tombstones,
+    profile: normalizeProfile(value.profile),
+    profileUpdatedAt: validIso(value.profileUpdatedAt)
+      ? (value.profileUpdatedAt as string)
+      : legacyProfileUpdatedAt,
     settings: normalizeSettings(value.settings),
     settingsUpdatedAt: validIso(value.settingsUpdatedAt)
       ? (value.settingsUpdatedAt as string)
@@ -376,6 +450,8 @@ export function mergeHealthData(
   const cloudSettingsAreNewer =
     Date.parse(cloud.settingsUpdatedAt) >= Date.parse(local.settingsUpdatedAt);
   const cloudDataIsNewer = Date.parse(cloud.updatedAt) >= Date.parse(local.updatedAt);
+  const cloudProfileIsNewer =
+    Date.parse(cloud.profileUpdatedAt) >= Date.parse(local.profileUpdatedAt);
 
   return {
     schemaVersion: Math.max(cloud.schemaVersion, local.schemaVersion),
@@ -395,6 +471,10 @@ export function mergeHealthData(
       deletedEntryIds.dietCheckInIds,
     ),
     deletedEntryIds,
+    profile: cloudProfileIsNewer ? cloud.profile : local.profile,
+    profileUpdatedAt: cloudProfileIsNewer
+      ? cloud.profileUpdatedAt
+      : local.profileUpdatedAt,
     settings: cloudSettingsAreNewer ? cloud.settings : local.settings,
     settingsUpdatedAt: cloudSettingsAreNewer
       ? cloud.settingsUpdatedAt

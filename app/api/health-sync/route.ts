@@ -25,9 +25,19 @@ type HealthSyncData = {
   bloodPressureSessions: JsonRecord[];
   dietCheckIns: JsonRecord[];
   deletedEntryIds: DeletedEntryIds;
+  profile?: unknown;
+  profileUpdatedAt?: string;
   settings: unknown;
   settingsUpdatedAt: string;
   updatedAt: string;
+};
+
+type NormalizedHealthSyncData = Omit<
+  HealthSyncData,
+  "profile" | "profileUpdatedAt"
+> & {
+  profile: unknown;
+  profileUpdatedAt: string;
 };
 
 const HEALTH_SYNC_EPOCH = "1970-01-01T00:00:00.000Z";
@@ -166,10 +176,14 @@ function normalizeDeletedEntryIds(value: unknown): DeletedEntryIds {
   };
 }
 
-function normalizeHealthSyncData(value: unknown): HealthSyncData {
+function normalizeHealthSyncData(value: unknown): NormalizedHealthSyncData {
   const data = isRecord(value) ? value : {};
   const legacySettingsUpdatedAt =
     "settings" in data
+      ? normalizeTimestamp(data.updatedAt)
+      : HEALTH_SYNC_EPOCH;
+  const legacyProfileUpdatedAt =
+    "profile" in data
       ? normalizeTimestamp(data.updatedAt)
       : HEALTH_SYNC_EPOCH;
 
@@ -179,6 +193,11 @@ function normalizeHealthSyncData(value: unknown): HealthSyncData {
     bloodPressureSessions: normalizeEntries(data.bloodPressureSessions),
     dietCheckIns: normalizeEntries(data.dietCheckIns),
     deletedEntryIds: normalizeDeletedEntryIds(data.deletedEntryIds),
+    profile: "profile" in data ? data.profile : {},
+    profileUpdatedAt: normalizeTimestamp(
+      data.profileUpdatedAt,
+      legacyProfileUpdatedAt,
+    ),
     settings: "settings" in data ? data.settings : {},
     settingsUpdatedAt: normalizeTimestamp(
       data.settingsUpdatedAt,
@@ -252,6 +271,23 @@ function mergeHealthSyncData(
   const hasExistingData = isRecord(existingValue);
   const existing = normalizeHealthSyncData(existingValue);
   const incoming = normalizeHealthSyncData(incomingValue);
+  const existingHasProfile =
+    isRecord(existingValue) && "profile" in existingValue;
+  const incomingHasProfile = "profile" in incomingValue;
+  const incomingProfileWins =
+    incomingHasProfile &&
+    (!existingHasProfile ||
+      Date.parse(incoming.profileUpdatedAt) >
+        Date.parse(existing.profileUpdatedAt));
+  const profileFields =
+    existingHasProfile || incomingHasProfile
+      ? {
+          profile: incomingProfileWins ? incoming.profile : existing.profile,
+          profileUpdatedAt: incomingProfileWins
+            ? incoming.profileUpdatedAt
+            : existing.profileUpdatedAt,
+        }
+      : {};
   const deletedEntryIds = mergeDeletedEntryIds(
     existing.deletedEntryIds,
     incoming.deletedEntryIds,
@@ -275,6 +311,10 @@ function mergeHealthSyncData(
       new Set(deletedEntryIds.dietCheckInIds),
     ),
     deletedEntryIds,
+    // Profile is an independent last-write-wins document. Crucially, payloads
+    // from schema-v2 clients omit it and therefore cannot erase a stored profile
+    // or materialize an empty placeholder that blocks a v3 client's first seed.
+    ...profileFields,
     settings:
       !hasExistingData ||
       Date.parse(incoming.settingsUpdatedAt) >

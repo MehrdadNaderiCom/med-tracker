@@ -1,11 +1,28 @@
 import { NextResponse } from "next/server";
 import { hasValidSession, isTrustedSessionOrigin } from "@/app/lib/session";
+import { mergePrimarySyncData } from "@/app/api/sync/merge";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const SYNC_KEY = process.env.MEDTRACK_SYNC_KEY ?? "medtrack:mehrdad:primary";
 const MAX_SYNC_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_CAS_ATTEMPTS = 6;
+const COMPARE_AND_SET_SCRIPT = `
+local current = redis.call("GET", KEYS[1])
+local expected_exists = ARGV[1] == "1"
+
+if expected_exists then
+  if not current or current ~= ARGV[2] then
+    return 0
+  end
+elseif current then
+  return 0
+end
+
+redis.call("SET", KEYS[1], ARGV[3])
+return 1
+`;
 
 function json(data: unknown, init?: ResponseInit) {
   const response = NextResponse.json(data, init);
@@ -117,14 +134,66 @@ async function redisCommand(command: unknown[]) {
   };
 }
 
+function getUtf8ByteLength(value: string) {
+  return Buffer.byteLength(value, "utf8");
+}
+
+async function readStoredData() {
+  const result = await redisCommand(["GET", SYNC_KEY]);
+
+  if (!result.configured || "error" in result) {
+    return { ...result, data: null, raw: null };
+  }
+
+  if (typeof result.result !== "string") {
+    return { ...result, data: null, raw: null };
+  }
+
+  try {
+    const data: unknown = JSON.parse(result.result);
+
+    if (!isRecord(data)) {
+      return { ...result, invalid: true as const, data: null, raw: null };
+    }
+
+    return { ...result, data, raw: result.result };
+  } catch {
+    return { ...result, invalid: true as const, data: null, raw: null };
+  }
+}
+
+async function compareAndSetStoredData(
+  expectedValue: string | null,
+  nextValue: string,
+) {
+  const result = await redisCommand([
+    "EVAL",
+    COMPARE_AND_SET_SCRIPT,
+    1,
+    SYNC_KEY,
+    expectedValue === null ? "0" : "1",
+    expectedValue ?? "",
+    nextValue,
+  ]);
+
+  if (!result.configured || "error" in result) {
+    return { ...result, swapped: false };
+  }
+
+  return {
+    ...result,
+    swapped: result.result === 1 || result.result === "1",
+  };
+}
+
 export async function GET() {
   if (!(await hasValidSession())) {
     return json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await redisCommand(["GET", SYNC_KEY]);
+  const stored = await readStoredData();
 
-  if (!result.configured) {
+  if (!stored.configured) {
     return json(
       {
         configured: false,
@@ -135,28 +204,21 @@ export async function GET() {
     );
   }
 
-  if ("error" in result) {
+  if ("error" in stored) {
     return json(
-      { configured: true, data: null, error: result.error },
+      { configured: true, data: null, error: stored.error },
       { status: 502 },
     );
   }
 
-  if (typeof result.result !== "string") {
-    return json({ configured: true, data: null });
-  }
-
-  try {
-    return json({
-      configured: true,
-      data: JSON.parse(result.result),
-    });
-  } catch {
+  if ("invalid" in stored) {
     return json(
       { configured: true, data: null, error: "Stored data is invalid" },
       { status: 502 },
     );
   }
+
+  return json({ configured: true, data: stored.data });
 }
 
 export async function PUT(request: Request) {
@@ -188,29 +250,67 @@ export async function PUT(request: Request) {
     return json({ error: "Invalid sync payload" }, { status: 400 });
   }
 
-  const savedAt = new Date().toISOString();
-  const result = await redisCommand([
-    "SET",
-    SYNC_KEY,
-    JSON.stringify({ ...body.data, updatedAt: savedAt }),
-  ]);
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const stored = await readStoredData();
 
-  if (!result.configured) {
-    return json(
-      {
-        configured: false,
-        error: "Database is not configured",
-      },
-      { status: 503 },
-    );
+    if (!stored.configured) {
+      return json(
+        {
+          configured: false,
+          error: "Database is not configured",
+        },
+        { status: 503 },
+      );
+    }
+
+    if ("error" in stored) {
+      return json(
+        { configured: true, error: stored.error },
+        { status: 502 },
+      );
+    }
+
+    if ("invalid" in stored) {
+      return json(
+        { configured: true, error: "Stored data is invalid" },
+        { status: 502 },
+      );
+    }
+
+    const savedAt = new Date().toISOString();
+    const mergedData = mergePrimarySyncData(stored.data, body.data, savedAt);
+    const serializedData = JSON.stringify(mergedData);
+
+    if (getUtf8ByteLength(serializedData) > MAX_SYNC_BODY_BYTES) {
+      return json({ error: "Merged sync data is too large" }, { status: 413 });
+    }
+
+    const result = await compareAndSetStoredData(stored.raw, serializedData);
+
+    if (!result.configured) {
+      return json(
+        {
+          configured: false,
+          error: "Database is not configured",
+        },
+        { status: 503 },
+      );
+    }
+
+    if ("error" in result) {
+      return json(
+        { configured: true, error: result.error },
+        { status: 502 },
+      );
+    }
+
+    if (result.swapped) {
+      return json({ configured: true, savedAt });
+    }
   }
 
-  if ("error" in result) {
-    return json(
-      { configured: true, error: result.error },
-      { status: 502 },
-    );
-  }
-
-  return json({ configured: true, savedAt });
+  return json(
+    { configured: true, error: "Data changed concurrently; retry the save" },
+    { status: 409 },
+  );
 }

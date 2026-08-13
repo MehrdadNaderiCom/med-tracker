@@ -59,6 +59,7 @@ import type {
 import type {
   BloodPressureSession,
   DietCheckIn,
+  HealthProfile,
   HealthSettings,
   WeightEntry,
 } from "@/types/health";
@@ -3055,6 +3056,16 @@ export default function MedTrackApp() {
     }));
   }
 
+  function handleUpdateHealthProfile(profile: HealthProfile) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      profile,
+      profileUpdatedAt: updatedAt,
+      updatedAt,
+    }));
+    toast.success("Health profile saved");
+  }
+
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -4000,6 +4011,7 @@ export default function MedTrackApp() {
                 weightEntries={healthData.weightEntries}
                 bloodPressureSessions={healthData.bloodPressureSessions}
                 dietCheckIns={healthData.dietCheckIns}
+                profile={healthData.profile}
                 settings={healthData.settings}
                 now={today}
                 onAddWeight={handleAddWeight}
@@ -4008,6 +4020,7 @@ export default function MedTrackApp() {
                 onDeleteBloodPressure={handleDeleteBloodPressure}
                 onAddDiet={handleAddDietCheckIn}
                 onDeleteDiet={handleDeleteDietCheckIn}
+                onUpdateProfile={handleUpdateHealthProfile}
                 onUpdateSettings={handleUpdateHealthSettings}
               />
             </>

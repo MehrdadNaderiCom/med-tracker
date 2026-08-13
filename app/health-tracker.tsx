@@ -26,6 +26,7 @@ import type {
   BloodPressureSession,
   DietAdherence,
   DietCheckIn,
+  HealthProfile,
   HealthSettings,
   WeightEntry,
 } from "@/types/health";
@@ -66,6 +67,7 @@ export interface HealthTrackerProps {
   weightEntries: WeightEntry[];
   bloodPressureSessions: BloodPressureSession[];
   dietCheckIns: DietCheckIn[];
+  profile: HealthProfile;
   settings: HealthSettings;
   now: Date;
   onAddWeight: (entry: WeightEntry) => MaybePromise;
@@ -74,6 +76,7 @@ export interface HealthTrackerProps {
   onDeleteBloodPressure: (sessionId: string) => MaybePromise;
   onAddDiet: (checkIn: DietCheckIn) => MaybePromise;
   onDeleteDiet: (checkInId: string) => MaybePromise;
+  onUpdateProfile: (profile: HealthProfile) => MaybePromise;
   onUpdateSettings: (settings: HealthSettings) => MaybePromise;
 }
 
@@ -203,6 +206,33 @@ function errorText(error: unknown) {
 function isFutureTimestamp(value: string, now: Date) {
   const date = new Date(value);
   return date.getTime() > now.getTime() + 10 * MINUTE_MS;
+}
+
+function ageAt(dateOfBirth: string, now: Date) {
+  const birth = parseDateOnly(dateOfBirth);
+  const today = parseDateOnly(localDateKey(now));
+  if (!birth || !today) return null;
+  let age = today.getFullYear() - birth.getFullYear();
+  if (
+    today.getMonth() < birth.getMonth() ||
+    (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())
+  ) {
+    age -= 1;
+  }
+  return age >= 0 ? age : null;
+}
+
+function bmiScreeningLabel(bmi: number) {
+  if (bmi < 18.5) return "underweight range";
+  if (bmi < 25) return "healthy-weight range";
+  if (bmi < 30) return "overweight range";
+  return "obesity range";
+}
+
+function waistHeightScreeningLabel(ratio: number) {
+  if (ratio < 0.5) return "below the 0.5 screening threshold";
+  if (ratio < 0.6) return "increased-risk screening range";
+  return "further-increased-risk screening range";
 }
 
 function isMeasurementWithin(value: string, now: Date, windowMs: number) {
@@ -1347,6 +1377,320 @@ function DietForm({
   );
 }
 
+type ProfileDraft = Omit<
+  HealthProfile,
+  "heightCm" | "waistCircumferenceCm"
+> & {
+  heightCm: string;
+  waistCircumferenceCm: string;
+};
+
+function profileToDraft(profile: HealthProfile): ProfileDraft {
+  return {
+    ...profile,
+    heightCm: String(profile.heightCm),
+    waistCircumferenceCm: String(profile.waistCircumferenceCm),
+  };
+}
+
+function ProfilePanel({
+  profile,
+  currentWeight,
+  goalWeight,
+  now,
+  onUpdate,
+}: {
+  profile: HealthProfile;
+  currentWeight: number;
+  goalWeight: number;
+  now: Date;
+  onUpdate: (profile: HealthProfile) => MaybePromise;
+}) {
+  const [draft, setDraft] = useState(() => profileToDraft(profile));
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const age = ageAt(profile.dateOfBirth, now);
+  const heightM = profile.heightCm / 100;
+  const bmi = currentWeight / (heightM * heightM);
+  const goalBmi = goalWeight / (heightM * heightM);
+  const waistHeightRatio = profile.waistCircumferenceCm / profile.heightCm;
+  const waistMethodLabel =
+    profile.waistMeasurementMethod === "midpoint"
+      ? "midpoint method recorded"
+      : profile.waistMeasurementMethod === "other"
+        ? "other method recorded"
+        : "measurement method not recorded";
+
+  function setField<K extends keyof ProfileDraft>(
+    key: K,
+    value: ProfileDraft[K],
+  ) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const today = localDateKey(now);
+    const age = ageAt(draft.dateOfBirth, now);
+    const heightCm = parseNumber(draft.heightCm);
+    const waistCircumferenceCm = parseNumber(draft.waistCircumferenceCm);
+
+    if (age === null || age < 18 || age > 120 || draft.dateOfBirth > today) {
+      setMessage("Choose a valid adult date of birth.");
+      return;
+    }
+    if (
+      heightCm === null ||
+      heightCm < 100 ||
+      heightCm > 250 ||
+      waistCircumferenceCm === null ||
+      waistCircumferenceCm < 30 ||
+      waistCircumferenceCm > 250
+    ) {
+      setMessage("Use a height from 100–250 cm and waist from 30–250 cm.");
+      return;
+    }
+    if (
+      !parseDateOnly(draft.waistMeasuredAt) ||
+      draft.waistMeasuredAt > today
+    ) {
+      setMessage("Choose a valid waist measurement date that is not in the future.");
+      return;
+    }
+    if (!parseDateOnly(draft.dietStartDate) || draft.dietStartDate > today) {
+      setMessage("Choose a valid diet start date that is not in the future.");
+      return;
+    }
+    if (!draft.dietClinicianName.trim()) {
+      setMessage("Enter the clinician supervising the diet plan.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onUpdate({
+        ...draft,
+        heightCm,
+        waistCircumferenceCm,
+        activityNotes: draft.activityNotes.trim().slice(0, 1000),
+        dietClinicianName: draft.dietClinicianName.trim().slice(0, 200),
+      });
+      setMessage("Health profile saved.");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className={CARD_CLASS} aria-labelledby="profile-title">
+      <SectionHeading
+        icon={<Activity className="h-5 w-5" aria-hidden="true" />}
+        title="Health profile"
+        description="Personal context for interpreting your trends; editable without changing your logs."
+      />
+      <span id="profile-title" className="sr-only">Health profile</span>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="min-w-0 rounded-md bg-zinc-50 p-3">
+          <p className="text-xs font-medium text-zinc-500">Age / height</p>
+          <p className="mt-1 text-lg font-semibold text-zinc-950">
+            {age ?? "—"} yr · {profile.heightCm} cm
+          </p>
+          <p className="text-xs text-zinc-500">Born {profile.dateOfBirth}</p>
+        </div>
+        <div className="min-w-0 rounded-md bg-sky-50 p-3">
+          <p className="text-xs font-medium text-sky-700">BMI screening</p>
+          <p className="mt-1 text-lg font-semibold text-sky-950">{bmi.toFixed(1)}</p>
+          <p className="text-xs text-sky-700">
+            {bmiScreeningLabel(bmi)} · goal BMI {goalBmi.toFixed(2)}
+          </p>
+        </div>
+        <div className="min-w-0 rounded-md bg-amber-50 p-3">
+          <p className="text-xs font-medium text-amber-700">Waist / height</p>
+          <p className="mt-1 text-lg font-semibold text-amber-950">
+            {profile.waistCircumferenceCm} cm · {waistHeightRatio.toFixed(2)}
+          </p>
+          <p className="text-xs text-amber-700">
+            {waistHeightScreeningLabel(waistHeightRatio)}
+          </p>
+        </div>
+        <div className="min-w-0 rounded-md bg-emerald-50 p-3">
+          <p className="text-xs font-medium text-emerald-700">Diet plan</p>
+          <p className="mt-1 break-words text-sm font-semibold text-emerald-950" dir="auto">
+            {profile.dietClinicianName}
+          </p>
+          <p className="text-xs text-emerald-700">Started {profile.dietStartDate}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6 text-zinc-700">
+        <strong className="text-zinc-900">Activity context:</strong>{" "}
+        {profile.activityLevel === "sedentary"
+          ? "Very little movement / sedentary"
+          : `${profile.activityLevel} activity`}
+        {profile.activityNotes ? ` — ${profile.activityNotes}` : "."}
+        <p className="mt-1 text-xs leading-5 text-zinc-500">
+          BMI and waist-to-height ratio are screening tools, not diagnoses. The waist
+          ratio is provisional because the {waistMethodLabel}. Given the blood-pressure
+          concern and long inactivity, review the log and a gradual starting plan with
+          your clinician before vigorous exercise.
+        </p>
+      </div>
+
+      <details className="mt-3 rounded-md border border-zinc-200 bg-white">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200">
+          Edit profile details
+          <span className="text-xs font-normal text-zinc-500">Open</span>
+        </summary>
+        <form onSubmit={submit} className="border-t border-zinc-100 p-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label>
+              <span className={LABEL_CLASS}>Date of birth</span>
+              <input
+                className={INPUT_CLASS}
+                type="date"
+                required
+                max={localDateKey(now)}
+                value={draft.dateOfBirth}
+                onChange={(event) => setField("dateOfBirth", event.target.value)}
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Height (cm)</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                min="100"
+                max="250"
+                step="0.1"
+                required
+                inputMode="decimal"
+                value={draft.heightCm}
+                onChange={(event) => setField("heightCm", event.target.value)}
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Waist (cm)</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                min="30"
+                max="250"
+                step="0.1"
+                required
+                inputMode="decimal"
+                value={draft.waistCircumferenceCm}
+                onChange={(event) =>
+                  setField("waistCircumferenceCm", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Waist measured</span>
+              <input
+                className={INPUT_CLASS}
+                type="date"
+                required
+                max={localDateKey(now)}
+                value={draft.waistMeasuredAt}
+                onChange={(event) => setField("waistMeasuredAt", event.target.value)}
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Waist method</span>
+              <select
+                className={INPUT_CLASS}
+                value={draft.waistMeasurementMethod}
+                onChange={(event) =>
+                  setField(
+                    "waistMeasurementMethod",
+                    event.target.value as HealthProfile["waistMeasurementMethod"],
+                  )
+                }
+              >
+                <option value="unspecified">Not recorded (provisional)</option>
+                <option value="midpoint">Midpoint method</option>
+                <option value="other">Other method</option>
+              </select>
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Activity level</span>
+              <select
+                className={INPUT_CLASS}
+                value={draft.activityLevel}
+                onChange={(event) =>
+                  setField(
+                    "activityLevel",
+                    event.target.value as HealthProfile["activityLevel"],
+                  )
+                }
+              >
+                <option value="sedentary">Very little / sedentary</option>
+                <option value="light">Light</option>
+                <option value="moderate">Moderate</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Diet clinician</span>
+              <input
+                className={INPUT_CLASS}
+                type="text"
+                required
+                maxLength={200}
+                dir="auto"
+                value={draft.dietClinicianName}
+                onChange={(event) =>
+                  setField("dietClinicianName", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Diet started</span>
+              <input
+                className={INPUT_CLASS}
+                type="date"
+                required
+                max={localDateKey(now)}
+                value={draft.dietStartDate}
+                onChange={(event) => setField("dietStartDate", event.target.value)}
+              />
+            </label>
+          </div>
+          <label className="mt-3 block">
+            <span className={LABEL_CLASS}>Activity and strength notes</span>
+            <textarea
+              className={`${INPUT_CLASS} min-h-24 resize-y`}
+              maxLength={1000}
+              dir="auto"
+              value={draft.activityNotes}
+              onChange={(event) => setField("activityNotes", event.target.value)}
+            />
+          </label>
+          <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+            <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
+              {saving ? "Saving…" : "Save profile"}
+            </button>
+            <p
+              className={`text-sm ${
+                message === "Health profile saved."
+                  ? "text-emerald-700"
+                  : "text-rose-700"
+              }`}
+              aria-live="polite"
+            >
+              {message}
+            </p>
+          </div>
+        </form>
+      </details>
+    </section>
+  );
+}
+
 function SettingsPanel({
   settings,
   onUpdate,
@@ -1617,6 +1961,7 @@ export function HealthTracker({
   weightEntries,
   bloodPressureSessions,
   dietCheckIns,
+  profile,
   settings,
   now,
   onAddWeight,
@@ -1625,6 +1970,7 @@ export function HealthTracker({
   onDeleteBloodPressure,
   onAddDiet,
   onDeleteDiet,
+  onUpdateProfile,
   onUpdateSettings,
 }: HealthTrackerProps) {
   const validNow = Number.isFinite(now.getTime()) ? now : new Date(0);
@@ -2028,6 +2374,15 @@ export function HealthTracker({
           </p>
         ) : null}
       </section>
+
+      <ProfilePanel
+        key={JSON.stringify(profile)}
+        profile={profile}
+        currentWeight={currentWeight}
+        goalWeight={settings.goalWeightKg}
+        now={validNow}
+        onUpdate={onUpdateProfile}
+      />
 
       <section className={CARD_CLASS} aria-labelledby="weight-section-title">
         <SectionHeading

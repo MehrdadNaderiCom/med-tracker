@@ -47,6 +47,29 @@ export interface DietCheckIn {
   updatedAt: string;
 }
 
+export type HealthActivityLevel =
+  | "sedentary"
+  | "light"
+  | "moderate"
+  | "high";
+
+export type WaistMeasurementMethod =
+  | "unspecified"
+  | "midpoint"
+  | "other";
+
+export interface HealthProfile {
+  dateOfBirth: string;
+  heightCm: number;
+  waistCircumferenceCm: number;
+  waistMeasuredAt: string;
+  waistMeasurementMethod: WaistMeasurementMethod;
+  activityLevel: HealthActivityLevel;
+  activityNotes: string;
+  dietClinicianName: string;
+  dietStartDate: string;
+}
+
 export interface HealthSettings {
   baselineWeightKg: number;
   baselineDate: string;
