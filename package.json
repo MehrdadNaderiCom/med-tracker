@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:sync": "node --test scripts/primary-sync-merge.test.mjs"
   },
   "dependencies": {
     "date-fns": "^4.4.0",

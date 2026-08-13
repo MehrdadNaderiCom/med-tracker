@@ -54,6 +54,54 @@ function mergeItemsById(
   return Array.from(itemsById.values());
 }
 
+function isIntakeLogStatus(value: unknown) {
+  return value === "taken" || value === "lapse";
+}
+
+function mergeLogsById(
+  existingValue: unknown,
+  incomingValue: unknown,
+  deletedIds: Set<string>,
+) {
+  const logsById = new Map<string, JsonRecord>();
+
+  for (const log of normalizeItems(existingValue)) {
+    const id = String(log.id);
+
+    if (!deletedIds.has(id)) {
+      logsById.set(id, log);
+    }
+  }
+
+  for (const incomingLog of normalizeItems(incomingValue)) {
+    const id = String(incomingLog.id);
+
+    if (deletedIds.has(id)) {
+      continue;
+    }
+
+    const existingLog = logsById.get(id);
+
+    if (!existingLog) {
+      logsById.set(id, incomingLog);
+      continue;
+    }
+
+    const mergedLog = { ...incomingLog };
+
+    // A log's outcome is immutable for its ID. Older clients normalize every
+    // log to `taken`, so accepting their full-state snapshot would otherwise
+    // silently turn a previously recorded avoidance lapse into a completion.
+    if (isIntakeLogStatus(existingLog.status)) {
+      mergedLog.status = existingLog.status;
+    }
+
+    logsById.set(id, mergedLog);
+  }
+
+  return Array.from(logsById.values());
+}
+
 function isDateKey(value: unknown) {
   if (typeof value !== "string") {
     return false;
@@ -75,6 +123,14 @@ function isDateKey(value: unknown) {
     date.getUTCMonth() === month - 1 &&
     date.getUTCDate() === day
   );
+}
+
+function isMedicationTrackingMode(value: unknown) {
+  return value === "completion" || value === "avoidance";
+}
+
+function isPersonalPlanVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function mergeMedicationsById(existingValue: unknown, incomingValue: unknown) {
@@ -116,6 +172,15 @@ function mergeMedicationsById(existingValue: unknown, incomingValue: unknown) {
       mergedMedication.activeUntil = existingMedication.activeUntil;
     }
 
+    // Clients predating tracking modes omit this field. Keep the server's
+    // valid value unless a newer client sends another valid mode explicitly.
+    if (
+      !isMedicationTrackingMode(incomingMedication.trackingMode) &&
+      isMedicationTrackingMode(existingMedication.trackingMode)
+    ) {
+      mergedMedication.trackingMode = existingMedication.trackingMode;
+    }
+
     medicationsById.set(id, mergedMedication);
   }
 
@@ -140,15 +205,26 @@ export function mergePrimarySyncData(
     ]),
   );
   const deletedLogIdSet = new Set(deletedLogIds);
+  const existingPlanVersion = existing.personalPlanVersion;
+  const incomingPlanVersion = incomingValue.personalPlanVersion;
+  const mergedPlanVersion =
+    isPersonalPlanVersion(existingPlanVersion) &&
+    isPersonalPlanVersion(incomingPlanVersion)
+      ? Math.max(existingPlanVersion, incomingPlanVersion)
+      : isPersonalPlanVersion(existingPlanVersion)
+        ? existingPlanVersion
+        : isPersonalPlanVersion(incomingPlanVersion)
+          ? incomingPlanVersion
+          : null;
 
-  return {
+  const mergedData: JsonRecord = {
     ...existing,
     ...incomingValue,
     medications: mergeMedicationsById(
       existing.medications,
       incomingValue.medications,
     ),
-    logs: mergeItemsById(
+    logs: mergeLogsById(
       existing.logs,
       incomingValue.logs,
       deletedLogIdSet,
@@ -161,4 +237,10 @@ export function mergePrimarySyncData(
     ),
     updatedAt: savedAt,
   };
+
+  if (mergedPlanVersion !== null) {
+    mergedData.personalPlanVersion = mergedPlanVersion;
+  }
+
+  return mergedData;
 }

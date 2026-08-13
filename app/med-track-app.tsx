@@ -4,6 +4,7 @@ import { addDays, format, isValid, parseISO, subDays } from "date-fns";
 import {
   Activity,
   AlarmClock,
+  AlertTriangle,
   BarChart3,
   Bell,
   BellRing,
@@ -92,12 +93,15 @@ type MedicationFormState = {
 
 type TodayMedication = {
   medication: Medication;
+  dateKey: string;
   scheduleType: MedicationScheduleType;
   time: string | null;
   order: number | null;
   routineCategoryId: string | null;
   isTaken: boolean;
   takenLogId: string | null;
+  lapseLogId: string | null;
+  lapseRecordedAt: string | null;
 };
 
 type OrderedMedicationGroup = {
@@ -152,6 +156,7 @@ type ReportEntryDetail = {
   categoryId: string;
   scheduleLabel: string;
   isTaken: boolean;
+  hasLapse: boolean;
 };
 
 type ReportDayDetail = AdherenceDayPoint & {
@@ -164,6 +169,7 @@ type ItemReportPoint = {
   shortLabel: string;
   wasDue: boolean;
   isTaken: boolean;
+  hasLapse: boolean;
 };
 
 type ItemReport = {
@@ -175,6 +181,7 @@ type ItemReport = {
   isActive: boolean;
   due: number;
   taken: number;
+  lapses: number;
   missed: number;
   rate: number;
   points: ItemReportPoint[];
@@ -184,6 +191,7 @@ type CategoryReport = {
   categoryId: string;
   due: number;
   taken: number;
+  lapses: number;
   rate: number;
 };
 
@@ -236,7 +244,7 @@ const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
 const HEALTH_DATA_STORAGE_KEY = "medtrack-health-data-v1";
-const PERSONAL_PLAN_VERSION = 5;
+const PERSONAL_PLAN_VERSION = 6;
 const AUTO_ROLLOVER_HOUR = 12;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
@@ -827,6 +835,7 @@ function createStarterMedicationPlan(): Medication[] {
       notes:
         "Important health commitment: stay completely hookah-free for the full care day. Hookah smoke loads the body with toxins and carbon monoxide, worsens fatty-liver recovery, and works against weight-loss and cardiovascular goals. Mark this only when you stayed smoke-free all day.",
       isActive: true,
+      trackingMode: "avoidance",
     },
   ];
 }
@@ -864,6 +873,7 @@ function mergePersonalMedicationPlan(
       isActive: medication.isActive,
       activeFrom: medication.activeFrom,
       activeUntil: medication.activeUntil,
+      trackingMode: planMedication.trackingMode,
     };
   });
   const activeNames = new Set(
@@ -995,7 +1005,17 @@ function mergeSyncData(
   const medicationIdByName = new Map<string, string>();
 
   cloudData.medications.forEach((medication) => {
-    medicationById.set(medication.id, medication);
+    const localMedication = localData.medications.find(
+      (candidate) => candidate.id === medication.id,
+    );
+    medicationById.set(medication.id, {
+      ...medication,
+      trackingMode:
+        medication.trackingMode === "avoidance" ||
+        localMedication?.trackingMode === "avoidance"
+          ? "avoidance"
+          : "completion",
+    });
     medicationIdByName.set(normalizeMedicationName(medication.name), medication.id);
   });
 
@@ -1012,13 +1032,23 @@ function mergeSyncData(
 
   const medications = Array.from(medicationById.values());
   const logById = new Map<string, IntakeLog>();
+  const localLogById = new Map(localData.logs.map((log) => [log.id, log]));
 
   cloudData.logs.forEach((log) => {
     if (deletedLogIdSet.has(log.id)) {
       return;
     }
 
-    logById.set(log.id, log);
+    const localLog = localLogById.get(log.id);
+    logById.set(log.id, {
+      ...log,
+      // Once a log ID is a negative event, a stale client must not reinterpret
+      // the same immutable record as a successful completion.
+      status:
+        log.status === "lapse" || localLog?.status === "lapse"
+          ? "lapse"
+          : "taken",
+    });
   });
 
   localData.logs.forEach((log) => {
@@ -1561,6 +1591,8 @@ function normalizeMedication(value: unknown): Medication | null {
     },
     notes: normalizeString(value.notes),
     isActive: typeof value.isActive === "boolean" ? value.isActive : true,
+    trackingMode:
+      value.trackingMode === "avoidance" ? "avoidance" : "completion",
     activeFrom: normalizeOptionalDateKey(value.activeFrom),
     activeUntil: normalizeOptionalDateKey(value.activeUntil),
   };
@@ -1637,7 +1669,7 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
         : undefined,
     takenAt,
     date: normalizeString(value.date, takenAt.slice(0, 10)),
-    status: "taken",
+    status: value.status === "lapse" ? "lapse" : "taken",
     notes:
       typeof value.notes === "string" && value.notes.length > 0
         ? value.notes
@@ -1860,29 +1892,35 @@ function getTodayMedicationKey(entry: TodayMedication) {
     : `${entry.medication.id}:order:${entry.order ?? 1}`;
 }
 
-function getTodayMedicationLog(
+function isAvoidanceEntry(entry: TodayMedication) {
+  return entry.medication.trackingMode === "avoidance";
+}
+
+function isEntryResolved(entry: TodayMedication) {
+  return entry.isTaken || Boolean(entry.lapseLogId);
+}
+
+function getTodayMedicationLogs(
   logs: IntakeLog[],
   medication: Medication,
   scheduleType: MedicationScheduleType,
   todayKey: string,
   time: string | null,
 ) {
-  return (
-    logs.find((log) => {
-      if (log.medicationId !== medication.id || log.date !== todayKey) {
-        return false;
-      }
+  return logs.filter((log) => {
+    if (log.medicationId !== medication.id || log.date !== todayKey) {
+      return false;
+    }
 
-      const logScheduleType =
-        log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
+    const logScheduleType =
+      log.scheduleType ?? (log.scheduledTime ? "timed" : "ordered");
 
-      if (scheduleType === "timed") {
-        return logScheduleType === "timed" && log.scheduledTime === time;
-      }
+    if (scheduleType === "timed") {
+      return logScheduleType === "timed" && log.scheduledTime === time;
+    }
 
-      return logScheduleType === "ordered";
-    }) ?? null
-  );
+    return logScheduleType === "ordered";
+  });
 }
 
 function buildMedicationEntriesForDate(
@@ -1904,7 +1942,7 @@ function buildMedicationEntriesForDate(
 
       if (scheduleType === "timed") {
         medication.schedule.times.forEach((time) => {
-          const takenLog = getTodayMedicationLog(
+          const matchingLogs = getTodayMedicationLogs(
             logs,
             medication,
             scheduleType,
@@ -1912,20 +1950,25 @@ function buildMedicationEntriesForDate(
             time,
           );
 
+          const takenLog = matchingLogs.find((log) => log.status === "taken");
+          const lapseLog = matchingLogs.find((log) => log.status === "lapse");
           entries.push({
             medication,
+            dateKey,
             scheduleType,
             time,
             order: null,
             routineCategoryId: null,
-            isTaken: Boolean(takenLog),
+            isTaken: Boolean(takenLog) && !lapseLog,
             takenLogId: takenLog?.id ?? null,
+            lapseLogId: lapseLog?.id ?? null,
+            lapseRecordedAt: lapseLog?.takenAt ?? null,
           });
         });
         return;
       }
 
-      const takenLog = getTodayMedicationLog(
+      const matchingLogs = getTodayMedicationLogs(
         logs,
         medication,
         scheduleType,
@@ -1933,14 +1976,19 @@ function buildMedicationEntriesForDate(
         null,
       );
 
+      const takenLog = matchingLogs.find((log) => log.status === "taken");
+      const lapseLog = matchingLogs.find((log) => log.status === "lapse");
       entries.push({
         medication,
+        dateKey,
         scheduleType,
         time: null,
         order: getMedicationOrder(medication),
         routineCategoryId: getMedicationRoutineCategoryId(medication),
-        isTaken: Boolean(takenLog),
+        isTaken: Boolean(takenLog) && !lapseLog,
         takenLogId: takenLog?.id ?? null,
+        lapseLogId: lapseLog?.id ?? null,
+        lapseRecordedAt: lapseLog?.takenAt ?? null,
       });
     });
 
@@ -2051,6 +2099,7 @@ function buildReportEntryDetail(
     categoryId: entry.medication.category,
     scheduleLabel: getEntryScheduleLabel(entry, routineCategories),
     isTaken: entry.isTaken,
+    hasLapse: Boolean(entry.lapseLogId),
   };
 }
 
@@ -2112,6 +2161,7 @@ function getItemReports(
         shortLabel: day.shortLabel,
         wasDue: true,
         isTaken: entry.isTaken,
+        hasLapse: entry.hasLapse,
       };
 
       if (!existing) {
@@ -2128,7 +2178,8 @@ function getItemReports(
           isActive: medication?.isActive ?? false,
           due: 1,
           taken: entry.isTaken ? 1 : 0,
-          missed: entry.isTaken ? 0 : 1,
+          lapses: entry.hasLapse ? 1 : 0,
+          missed: entry.isTaken || entry.hasLapse ? 0 : 1,
           rate: entry.isTaken ? 100 : 0,
           points: [point],
         });
@@ -2137,7 +2188,8 @@ function getItemReports(
 
       existing.due += 1;
       existing.taken += entry.isTaken ? 1 : 0;
-      existing.missed += entry.isTaken ? 0 : 1;
+      existing.lapses += entry.hasLapse ? 1 : 0;
+      existing.missed += entry.isTaken || entry.hasLapse ? 0 : 1;
       existing.rate =
         existing.due === 0
           ? 0
@@ -2171,6 +2223,7 @@ function getCategoryReports(itemReports: ItemReport[]): CategoryReport[] {
         categoryId: item.categoryId,
         due: item.due,
         taken: item.taken,
+        lapses: item.lapses,
         rate: item.due === 0 ? 0 : Math.round((item.taken / item.due) * 100),
       });
       return;
@@ -2178,6 +2231,7 @@ function getCategoryReports(itemReports: ItemReport[]): CategoryReport[] {
 
     existing.due += item.due;
     existing.taken += item.taken;
+    existing.lapses += item.lapses;
     existing.rate =
       existing.due === 0
         ? 0
@@ -2280,6 +2334,7 @@ export default function MedTrackApp() {
   const [syncMessage, setSyncMessage] = useState("Checking cloud database");
   const [isStorageReady, setIsStorageReady] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
+  const recordedAvoidanceKeys = useRef<Set<string>>(new Set());
   const pageContentRef = useRef<HTMLElement>(null);
 
   function handleTabChange(nextTab: TabId) {
@@ -2691,17 +2746,35 @@ export default function MedTrackApp() {
   );
 
   const todayMedications = useMemo<TodayMedication[]>(() => {
-    if (!careDayDate || !todayKey) {
+    if (!careDayDate || !todayKey || !today) {
       return [];
     }
 
-    return buildMedicationEntriesForDate(
-      activeMedications,
+    const completionEntries = buildMedicationEntriesForDate(
+      activeMedications.filter(
+        (medication) => medication.trackingMode !== "avoidance",
+      ),
       logs,
       careDayDate,
       todayKey,
     );
-  }, [activeMedications, careDayDate, logs, todayKey]);
+    // Avoidance events are real-world occurrences, so they belong to the
+    // actual Tehran calendar day rather than the noon-based medication day.
+    const tehranDateKey = getTehranDateKey(today);
+    const tehranDate = getDateFromKey(tehranDateKey);
+    const avoidanceEntries = tehranDate
+      ? buildMedicationEntriesForDate(
+          activeMedications.filter(
+            (medication) => medication.trackingMode === "avoidance",
+          ),
+          logs,
+          tehranDate,
+          tehranDateKey,
+        )
+      : [];
+
+    return [...completionEntries, ...avoidanceEntries];
+  }, [activeMedications, careDayDate, logs, today, todayKey]);
 
   const sortedLogs = useMemo(
     () =>
@@ -2731,7 +2804,10 @@ export default function MedTrackApp() {
     const groups = new Map<string, TodayMedication[]>();
 
     todayMedications
-      .filter((entry) => entry.scheduleType === "ordered")
+      .filter(
+        (entry) =>
+          entry.scheduleType === "ordered" && !isAvoidanceEntry(entry),
+      )
       .forEach((entry) => {
         const order = entry.order ?? 1;
         const routineCategoryId =
@@ -2779,7 +2855,12 @@ export default function MedTrackApp() {
       });
   }, [routineCategories, todayMedications]);
 
-  const pendingTodayCount = todayMedications.length - takenTodayCount;
+  const pendingTodayCount = todayMedications.filter(
+    (entry) => !isEntryResolved(entry),
+  ).length;
+  const pendingCareDayCount = todayMedications.filter(
+    (entry) => !isAvoidanceEntry(entry) && !isEntryResolved(entry),
+  ).length;
 
   useEffect(() => {
     if (
@@ -3166,9 +3247,9 @@ export default function MedTrackApp() {
     }
 
     if (
-      pendingTodayCount > 0 &&
+      pendingCareDayCount > 0 &&
       !window.confirm(
-        `End this care day with ${pendingTodayCount} pending item(s)? You can undo immediately after.`,
+        `End this care day with ${pendingCareDayCount} pending item(s)? You can undo immediately after.`,
       )
     ) {
       return;
@@ -3585,6 +3666,7 @@ export default function MedTrackApp() {
       },
       notes: form.notes.trim(),
       isActive: true,
+      trackingMode: existingMedication?.trackingMode ?? "completion",
       activeFrom:
         existingMedication?.activeFrom ??
         todayKey ??
@@ -3669,8 +3751,17 @@ export default function MedTrackApp() {
       return;
     }
 
+    if (entry.lapseLogId) {
+      toast.error("Hookah use is already recorded for this day");
+      return;
+    }
+
     if (entry.isTaken) {
-      toast.error("This dose is already marked as taken");
+      toast.error(
+        isAvoidanceEntry(entry)
+          ? "This hookah-free day is already recorded"
+          : "This dose is already marked as taken",
+      );
       return;
     }
 
@@ -3696,13 +3787,17 @@ export default function MedTrackApp() {
       routineCategoryName:
         entry.scheduleType === "ordered" ? routineCategory?.name : undefined,
       takenAt: new Date().toISOString(),
-      date: todayKey,
+      date: entry.dateKey,
       status: "taken",
       notes: entry.medication.notes || undefined,
     };
 
     setLogs((currentLogs) => [log, ...currentLogs]);
-    toast.success(`${entry.medication.name} marked as taken`);
+    toast.success(
+      isAvoidanceEntry(entry)
+        ? "Hookah-free day recorded"
+        : `${entry.medication.name} marked as taken`,
+    );
   }
 
   function rememberDeletedLogIds(logIds: string[]) {
@@ -3728,13 +3823,110 @@ export default function MedTrackApp() {
     toast.success(`${entry.medication.name} moved back to pending`);
   }
 
+  function removeAvoidanceLapse(logId: string, medicationName: string) {
+    rememberDeletedLogIds([logId]);
+    setLogs((currentLogs) =>
+      currentLogs.filter((currentLog) => currentLog.id !== logId),
+    );
+    recordedAvoidanceKeys.current.clear();
+    toast.success(`${medicationName} moved back to check-in`);
+  }
+
+  function handleRecordAvoidanceLapse(entry: TodayMedication) {
+    if (!isAvoidanceEntry(entry)) {
+      toast.error("This action is only available for avoidance check-ins");
+      return;
+    }
+
+    if (entry.lapseLogId) {
+      toast.error("Hookah use is already recorded for this day");
+      return;
+    }
+
+    if (entry.isTaken) {
+      toast.error(
+        "A hookah-free outcome is already recorded. Undo it before logging use.",
+      );
+      return;
+    }
+
+    const now = new Date();
+    const occurrenceDateKey = getTehranDateKey(now);
+    const dedupeKey = `${entry.medication.id}:${occurrenceDateKey}:lapse`;
+
+    if (recordedAvoidanceKeys.current.has(dedupeKey)) {
+      return;
+    }
+
+    const alreadyRecorded = logs.some(
+      (log) =>
+        log.medicationId === entry.medication.id &&
+        log.date === occurrenceDateKey &&
+        log.status === "lapse",
+    );
+
+    if (alreadyRecorded) {
+      toast.error("Hookah use is already recorded for today");
+      return;
+    }
+
+    recordedAvoidanceKeys.current.add(dedupeKey);
+    const routineCategory = getRoutineCategoryOption(
+      routineCategories,
+      entry.routineCategoryId,
+    );
+    const log: IntakeLog = {
+      id: createId(),
+      medicationId: entry.medication.id,
+      medicationName: entry.medication.name,
+      dosage: entry.medication.dosage,
+      unit: entry.medication.unit,
+      category: entry.medication.category,
+      scheduleType: "ordered",
+      scheduledTime: null,
+      order: entry.order ?? 1,
+      routineCategoryId: routineCategory.id,
+      routineCategoryName: routineCategory.name,
+      takenAt: now.toISOString(),
+      date: occurrenceDateKey,
+      status: "lapse",
+      notes: "Hookah use reported at the time it happened.",
+    };
+
+    setLogs((currentLogs) => [log, ...currentLogs]);
+    toast(`Hookah use logged at ${getTehranTime(now)}`, {
+      action: {
+        label: "Undo",
+        onClick: () => removeAvoidanceLapse(log.id, entry.medication.name),
+      },
+    });
+  }
+
+  function handleUndoAvoidanceOutcome(entry: TodayMedication) {
+    const logId = entry.lapseLogId ?? entry.takenLogId;
+
+    if (!logId) {
+      toast.error("There is no hookah check-in to undo");
+      return;
+    }
+
+    rememberDeletedLogIds([logId]);
+    setLogs((currentLogs) =>
+      currentLogs.filter((currentLog) => currentLog.id !== logId),
+    );
+    recordedAvoidanceKeys.current.clear();
+    toast.success("Hookah check-in moved back to pending");
+  }
+
   function handleMarkGroupAsTaken(entries: TodayMedication[]) {
     if (!todayKey) {
       toast.error("The schedule is still loading");
       return;
     }
 
-    const pendingEntries = entries.filter((entry) => !entry.isTaken);
+    const pendingEntries = entries.filter(
+      (entry) => !isAvoidanceEntry(entry) && !entry.isTaken,
+    );
 
     if (pendingEntries.length === 0) {
       toast.error("This step is already marked as taken");
@@ -3786,6 +3978,10 @@ export default function MedTrackApp() {
   }
 
   function handleMarkPastAsTaken(entry: TodayMedication, dateKey: string) {
+    if (isAvoidanceEntry(entry)) {
+      toast.error("Hookah outcomes cannot be added through medication backfill");
+      return;
+    }
     if (entry.isTaken) {
       toast.error("This dose is already marked as taken for that care day");
       return;
@@ -3823,7 +4019,9 @@ export default function MedTrackApp() {
 
   function handleDeleteLog(log: IntakeLog) {
     const shouldDelete = window.confirm(
-      `Delete the history log for ${log.medicationName}?`,
+      log.status === "lapse"
+        ? "Delete this recorded hookah-use event? The check-in will return to today's list if it was recorded today."
+        : `Delete the history log for ${log.medicationName}?`,
     );
 
     if (!shouldDelete) {
@@ -3834,7 +4032,12 @@ export default function MedTrackApp() {
       currentLogs.filter((currentLog) => currentLog.id !== log.id),
     );
     rememberDeletedLogIds([log.id]);
-    toast.success("History log deleted");
+    recordedAvoidanceKeys.current.clear();
+    toast.success(
+      log.status === "lapse"
+        ? "Hookah-use event deleted"
+        : "History log deleted",
+    );
   }
 
   if (!isStorageReady || !today || !todayKey || !careDayDate) {
@@ -3987,6 +4190,8 @@ export default function MedTrackApp() {
               routineCategories={routineCategories}
               onMarkAsTaken={handleMarkAsTaken}
               onUndoTaken={handleUndoTaken}
+              onRecordAvoidanceLapse={handleRecordAvoidanceLapse}
+              onUndoAvoidanceOutcome={handleUndoAvoidanceOutcome}
               onMarkGroupAsTaken={handleMarkGroupAsTaken}
               onUndoGroupTaken={handleUndoGroupTaken}
               onAddMedication={() => handleTabChange("add")}
@@ -4424,6 +4629,8 @@ function DashboardView({
   routineCategories,
   onMarkAsTaken,
   onUndoTaken,
+  onRecordAvoidanceLapse,
+  onUndoAvoidanceOutcome,
   onMarkGroupAsTaken,
   onUndoGroupTaken,
   onAddMedication,
@@ -4446,6 +4653,8 @@ function DashboardView({
   routineCategories: RoutineCategory[];
   onMarkAsTaken: (entry: TodayMedication) => void;
   onUndoTaken: (entry: TodayMedication) => void;
+  onRecordAvoidanceLapse: (entry: TodayMedication) => void;
+  onUndoAvoidanceOutcome: (entry: TodayMedication) => void;
   onMarkGroupAsTaken: (entries: TodayMedication[]) => void;
   onUndoGroupTaken: (entries: TodayMedication[]) => void;
   onAddMedication: () => void;
@@ -4453,7 +4662,11 @@ function DashboardView({
   onOpenHealth: () => void;
   onEndCareDay: () => void;
 }) {
-  const timedMedications = todayMedications.filter(
+  const avoidanceEntries = todayMedications.filter(isAvoidanceEntry);
+  const completionEntries = todayMedications.filter(
+    (entry) => !isAvoidanceEntry(entry),
+  );
+  const timedMedications = completionEntries.filter(
     (entry) => entry.scheduleType === "timed",
   );
   const pendingTimedMedications = timedMedications.filter(
@@ -4503,6 +4716,8 @@ function DashboardView({
   );
   const completedChecklistCount =
     completedTimedMedications.length + completedOrderedCount;
+  const resolvedTodayCount = takenTodayCount +
+    avoidanceEntries.filter((entry) => Boolean(entry.lapseLogId)).length;
   const hasPendingChecklistItems =
     pendingTimedMedications.length > 0 || pendingOrderedSections.length > 0;
   const completionRate =
@@ -4545,6 +4760,15 @@ function DashboardView({
         onOpenHealth={onOpenHealth}
       />
 
+      {avoidanceEntries.length > 0 && (
+        <AvoidanceCheckInCard
+          entries={avoidanceEntries}
+          onRecordLapse={onRecordAvoidanceLapse}
+          onRecordSuccess={onMarkAsTaken}
+          onUndo={onUndoAvoidanceOutcome}
+        />
+      )}
+
       <section className="mb-4 hidden rounded-lg border border-emerald-100 bg-white p-5 shadow-sm sm:block">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
@@ -4585,7 +4809,7 @@ function DashboardView({
         />
         <StatTile
           icon={CheckCircle2}
-          label="Taken today"
+          label="Successful today"
           value={takenTodayCount}
           tone="sky"
         />
@@ -4618,7 +4842,7 @@ function DashboardView({
                 Care Checklist
               </h2>
               <p className="text-sm text-zinc-500">
-                {takenTodayCount} of {todayMedications.length} items completed
+                {resolvedTodayCount} of {todayMedications.length} outcomes recorded
               </p>
             </div>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
@@ -4680,7 +4904,7 @@ function DashboardView({
                     </div>
                     <div>
                       <h3 className="font-semibold text-emerald-950">
-                        No pending items
+                        No pending medication or routine items
                       </h3>
                       <p className="text-sm text-emerald-800">
                         Completed items are grouped below.
@@ -4839,6 +5063,150 @@ function DashboardView({
         </aside>
       </div>
     </div>
+  );
+}
+
+function AvoidanceCheckInCard({
+  entries,
+  onRecordLapse,
+  onRecordSuccess,
+  onUndo,
+}: {
+  entries: TodayMedication[];
+  onRecordLapse: (entry: TodayMedication) => void;
+  onRecordSuccess: (entry: TodayMedication) => void;
+  onUndo: (entry: TodayMedication) => void;
+}) {
+  return (
+    <section className="mb-4 rounded-lg border border-amber-200 bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex items-start gap-3">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-800">
+          <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="font-semibold text-zinc-950">Hookah check-in</h2>
+          <p className="mt-1 text-sm leading-5 text-zinc-600">
+            If you smoke, log it immediately. This records a negative event,
+            saves the time, and removes the check-in from pending.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-3">
+        {entries.map((entry) => {
+          const hasLapse = Boolean(entry.lapseLogId);
+
+          if (hasLapse) {
+            const recordedTime = entry.lapseRecordedAt
+              ? getTehranTime(new Date(entry.lapseRecordedAt))
+              : null;
+
+            return (
+              <div
+                key={`avoidance-${entry.medication.id}`}
+                className="flex flex-col gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 sm:flex-row sm:items-center sm:justify-between"
+                role="status"
+                aria-live="polite"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertTriangle
+                    className="mt-0.5 h-5 w-5 shrink-0 text-rose-700"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <p className="font-semibold text-rose-950">
+                      Hookah use recorded
+                    </p>
+                    <p className="mt-0.5 text-sm text-rose-800">
+                      {recordedTime
+                        ? `Recorded today at ${recordedTime}`
+                        : "Recorded today"}
+                      . This is not counted as a completed task.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-800 transition hover:bg-rose-100 sm:w-auto"
+                  type="button"
+                  onClick={() => onUndo(entry)}
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                  Undo
+                </button>
+              </div>
+            );
+          }
+
+          if (entry.isTaken) {
+            return (
+              <div
+                key={`avoidance-${entry.medication.id}`}
+                className="flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 sm:flex-row sm:items-center sm:justify-between"
+                role="status"
+                aria-live="polite"
+              >
+                <div className="flex items-start gap-3">
+                  <CheckCircle2
+                    className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <p className="font-semibold text-emerald-950">
+                      Hookah-free day recorded
+                    </p>
+                    <p className="mt-0.5 text-sm text-emerald-800">
+                      Today is saved as a hookah-free day.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100 sm:w-auto"
+                  type="button"
+                  onClick={() => onUndo(entry)}
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                  Undo
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={`avoidance-${entry.medication.id}`}
+              className="rounded-lg border border-zinc-200 bg-zinc-50 p-3"
+            >
+              <div>
+                <p className="font-semibold text-zinc-950">Hookah-free today?</p>
+                <p className="mt-1 text-sm text-zinc-600">
+                  One tap records what happened. No confirmation is required.
+                </p>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <button
+                  className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-700"
+                  type="button"
+                  onClick={() => onRecordLapse(entry)}
+                  aria-label="Log hookah use now"
+                >
+                  <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+                  <span dir="auto">I smoked hookah · قلیان کشیدم</span>
+                </button>
+                <button
+                  className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-emerald-300 bg-white px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
+                  type="button"
+                  onClick={() => onRecordSuccess(entry)}
+                  aria-label="Record a hookah-free day"
+                >
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                  End day: I stayed hookah-free
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -5559,12 +5927,14 @@ function HistoryView({
     logs,
     selectedDateObject,
     selectedDate,
+  ).filter((entry) => !isAvoidanceEntry(entry));
+  const missingEntries = backfillEntries.filter(
+    (entry) => !isEntryResolved(entry),
   );
-  const missingEntries = backfillEntries.filter((entry) => !entry.isTaken);
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHeader title="History" description="Past intake logs" />
+      <PageHeader title="History" description="Past care and event logs" />
 
       <section className="mb-5 rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -5574,7 +5944,7 @@ function HistoryView({
             </h2>
             <p className="mt-1 text-sm text-zinc-500">
               Pick a day, then mark anything you actually took but forgot to
-              check.
+              check. Hookah use can only be recorded at the time it happens.
             </p>
           </div>
           <label className="block">
@@ -5666,7 +6036,7 @@ function HistoryView({
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold text-zinc-950">
-              Intake Logs
+              Activity Logs
             </h2>
             <p className="text-sm text-zinc-500">
               Delete a mistaken log or review past care days.
@@ -5689,19 +6059,30 @@ function HistoryView({
                 log.category,
               );
               const toneClasses = CATEGORY_TONE_CLASSES[category.tone];
+              const isLapse = log.status === "lapse";
 
               return (
                 <article
                   key={log.id}
-                  className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  className={`flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between ${
+                    isLapse
+                      ? "border-rose-200 bg-rose-50/50"
+                      : "border-zinc-200"
+                  }`}
                 >
                 <div className="flex gap-3">
                   <div
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
-                      toneClasses.iconClassName
+                      isLapse
+                        ? "bg-rose-100 text-rose-700"
+                        : toneClasses.iconClassName
                     }`}
                   >
-                    <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                    {isLapse ? (
+                      <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+                    ) : (
+                      <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                    )}
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -5712,10 +6093,16 @@ function HistoryView({
                         categoryId={log.category}
                         categories={categories}
                       />
+                      {isLapse && (
+                        <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-800">
+                          Hookah use recorded
+                        </span>
+                      )}
                     </div>
                     <p className="mt-1 text-sm text-zinc-600">
-                      {log.dosage} {log.unit} -{" "}
-                      {getLogScheduleLabel(log, routineCategories)}
+                      {isLapse
+                        ? "Negative event recorded at the time it was reported"
+                        : `${log.dosage} ${log.unit} - ${getLogScheduleLabel(log, routineCategories)}`}
                     </p>
                     <p className="mt-1 text-xs font-medium text-zinc-500">
                       Care day: {formatCareDayDate(log.date)}
@@ -6300,6 +6687,11 @@ function ReportsView({
                   </div>
                   <p className="mt-3 text-sm text-zinc-500">
                     {report.taken}/{report.due} completed
+                    {report.lapses > 0
+                      ? ` · ${report.lapses} hookah use ${
+                          report.lapses === 1 ? "event" : "events"
+                        } recorded`
+                      : ""}
                   </p>
                   <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
                     <div
@@ -6328,8 +6720,21 @@ function ReportsView({
           <div className="space-y-2">
             {dayDetails.map((day) => {
               const isExpanded = expandedDayKey === day.dateKey;
-              const missedEntries = day.entries.filter((entry) => !entry.isTaken);
+              const lapseEntries = day.entries.filter((entry) => entry.hasLapse);
+              const missedEntries = day.entries.filter(
+                (entry) => !entry.isTaken && !entry.hasLapse,
+              );
               const takenEntries = day.entries.filter((entry) => entry.isTaken);
+              const daySummary =
+                day.due === 0
+                  ? "No scheduled items"
+                  : `${day.taken}/${day.due} done${
+                      lapseEntries.length > 0
+                        ? ` · ${lapseEntries.length} hookah use ${
+                            lapseEntries.length === 1 ? "event" : "events"
+                          }`
+                        : ""
+                    } · ${missedEntries.length} unrecorded · ${day.rate}%`;
 
               return (
                 <article
@@ -6351,9 +6756,7 @@ function ReportsView({
                         {day.label}
                       </span>
                       <span className="mt-1 block text-xs font-medium text-zinc-500">
-                        {day.due === 0
-                          ? "No scheduled items"
-                          : `${day.taken}/${day.due} done · ${missedEntries.length} missed · ${day.rate}%`}
+                        {daySummary}
                       </span>
                     </span>
                     <span className="flex shrink-0 items-center gap-2">
@@ -6408,13 +6811,30 @@ function ReportsView({
                             )}
                           </div>
 
+                          {lapseEntries.length > 0 && (
+                            <div>
+                              <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-rose-700">
+                                Hookah use recorded ({lapseEntries.length})
+                              </h3>
+                              <div className="space-y-2">
+                                {lapseEntries.map((entry) => (
+                                  <ReportEntryRow
+                                    key={`lapse-${entry.key}`}
+                                    entry={entry}
+                                    categories={categories}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
                           <div>
-                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-rose-700">
-                              Missed ({missedEntries.length})
+                            <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-amber-700">
+                              Not recorded ({missedEntries.length})
                             </h3>
                             {missedEntries.length === 0 ? (
                               <p className="rounded-md bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
-                                Perfect day — nothing missed.
+                                No unresolved items.
                               </p>
                             ) : (
                               <div className="space-y-2">
@@ -6490,7 +6910,12 @@ function ReportsView({
                           </div>
                           <p className="mt-1 text-xs text-zinc-500">
                             {item.dosage} {item.unit} · {item.taken}/{item.due}{" "}
-                            · {item.missed} missed
+                            · {item.missed} unrecorded
+                            {item.lapses > 0
+                              ? ` · ${item.lapses} hookah use ${
+                                  item.lapses === 1 ? "event" : "events"
+                                }`
+                              : ""}
                           </p>
                         </div>
                         <span
@@ -6536,7 +6961,8 @@ function ReportsView({
                   </div>
                   <p className="mt-2 text-sm text-zinc-500">
                     Detailed timeline for the selected range. Green = done,
-                    rose = missed, gray = not due that day.
+                    rose = hookah use recorded, amber = unrecorded, gray = not
+                    due that day.
                   </p>
                   <div className="mt-4 grid grid-cols-7 gap-1.5 sm:grid-cols-10">
                     {selectedItem.points.map((point) => (
@@ -6545,16 +6971,20 @@ function ReportsView({
                         className={`rounded-md px-1 py-2 text-center ${
                           !point.wasDue
                             ? "bg-zinc-200/70"
-                            : point.isTaken
+                            : point.hasLapse
+                              ? "bg-rose-500 text-white"
+                              : point.isTaken
                               ? "bg-emerald-500 text-white"
-                              : "bg-rose-400 text-white"
+                              : "bg-amber-300 text-amber-950"
                         }`}
                         title={`${point.dateKey}: ${
                           !point.wasDue
                             ? "Not due"
+                            : point.hasLapse
+                              ? "Hookah use recorded"
                             : point.isTaken
                               ? "Done"
-                              : "Missed"
+                              : "Not recorded"
                         }`}
                       >
                         <span className="block text-[10px] font-semibold leading-3">
@@ -6563,7 +6993,13 @@ function ReportsView({
                       </div>
                     ))}
                   </div>
-                  <dl className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
+                  <dl
+                    className={`mt-4 grid gap-2 text-center text-sm ${
+                      selectedItem.lapses > 0
+                        ? "grid-cols-2 sm:grid-cols-4"
+                        : "grid-cols-3"
+                    }`}
+                  >
                     <div className="rounded-md bg-white p-2">
                       <dt className="text-xs text-zinc-500">Due</dt>
                       <dd className="font-semibold text-zinc-900">
@@ -6576,9 +7012,17 @@ function ReportsView({
                         {selectedItem.taken}
                       </dd>
                     </div>
+                    {selectedItem.lapses > 0 && (
+                      <div className="rounded-md bg-rose-50 p-2">
+                        <dt className="text-xs text-rose-700">Hookah use</dt>
+                        <dd className="font-semibold text-rose-800">
+                          {selectedItem.lapses}
+                        </dd>
+                      </div>
+                    )}
                     <div className="rounded-md bg-white p-2">
-                      <dt className="text-xs text-zinc-500">Missed</dt>
-                      <dd className="font-semibold text-rose-700">
+                      <dt className="text-xs text-zinc-500">Unrecorded</dt>
+                      <dd className="font-semibold text-amber-700">
                         {selectedItem.missed}
                       </dd>
                     </div>
@@ -6600,13 +7044,20 @@ function ReportEntryRow({
   entry: ReportEntryDetail;
   categories: MedicationCategoryOption[];
 }) {
+  const outcomeClasses = entry.hasLapse
+    ? "border-rose-200 bg-rose-50/60"
+    : entry.isTaken
+      ? "border-emerald-200 bg-emerald-50/60"
+      : "border-amber-200 bg-amber-50/50";
+  const badgeClasses = entry.hasLapse
+    ? "bg-rose-100 text-rose-800"
+    : entry.isTaken
+      ? "bg-emerald-100 text-emerald-800"
+      : "bg-amber-100 text-amber-800";
+
   return (
     <div
-      className={`flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between ${
-        entry.isTaken
-          ? "border-emerald-200 bg-emerald-50/60"
-          : "border-rose-200 bg-rose-50/50"
-      }`}
+      className={`flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between ${outcomeClasses}`}
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -6618,18 +7069,20 @@ function ReportEntryRow({
         </p>
       </div>
       <span
-        className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
-          entry.isTaken
-            ? "bg-emerald-100 text-emerald-800"
-            : "bg-rose-100 text-rose-800"
-        }`}
+        className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${badgeClasses}`}
       >
-        {entry.isTaken ? (
+        {entry.hasLapse ? (
+          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+        ) : entry.isTaken ? (
           <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
         ) : (
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         )}
-        {entry.isTaken ? "Done" : "Missed"}
+        {entry.hasLapse
+          ? "Hookah use recorded"
+          : entry.isTaken
+            ? "Done"
+            : "Not recorded"}
       </span>
     </div>
   );
@@ -6651,15 +7104,31 @@ function ItemSparkline({ points }: { points: ItemReportPoint[] }) {
         <span
           key={point.dateKey}
           className={`min-w-0 flex-1 rounded-sm ${
-            !point.wasDue
+           !point.wasDue
               ? "bg-zinc-200"
-              : point.isTaken
+              : point.hasLapse
+                ? "bg-rose-500"
+                : point.isTaken
                 ? "bg-emerald-500"
-                : "bg-rose-400"
+                : "bg-amber-300"
           }`}
-          style={{ height: point.wasDue ? (point.isTaken ? "100%" : "55%") : "25%" }}
+          style={{
+            height: !point.wasDue
+              ? "25%"
+              : point.isTaken
+                ? "100%"
+                : point.hasLapse
+                  ? "75%"
+                  : "45%",
+          }}
           title={`${point.dateKey}: ${
-            !point.wasDue ? "Not due" : point.isTaken ? "Done" : "Missed"
+            !point.wasDue
+              ? "Not due"
+              : point.hasLapse
+                ? "Hookah use recorded"
+                : point.isTaken
+                  ? "Done"
+                  : "Not recorded"
           }`}
         />
       ))}

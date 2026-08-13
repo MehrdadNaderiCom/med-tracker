@@ -18,6 +18,8 @@ export type WeekDay =
   | "saturday";
 
 export type MedicationScheduleType = "timed" | "ordered";
+export type MedicationTrackingMode = "completion" | "avoidance";
+export type IntakeLogStatus = "taken" | "lapse";
 export type MedicationDayMode =
   | "daily"
   | "weekdays"
@@ -56,6 +58,8 @@ export interface Medication {
   schedule: MedicationSchedule;
   notes: string;
   isActive: boolean;
+  /** Completion items are done when performed; avoidance items can record a lapse. */
+  trackingMode?: MedicationTrackingMode;
   /** First care-day (yyyy-MM-dd) this item counts toward due/adherence. */
   activeFrom?: string;
   /** Last care-day (yyyy-MM-dd) this item counts toward due/adherence after deactivation. */
@@ -77,6 +81,7 @@ export interface IntakeLog {
   groupName?: string;
   takenAt: string;
   date: string;
-  status: "taken";
+  /** `lapse` records a negative avoidance event and never counts as completion. */
+  status: IntakeLogStatus;
   notes?: string;
 }
