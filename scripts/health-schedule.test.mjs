@@ -65,7 +65,9 @@ test("Care Day minutes correctly order 23:00 before 01:00", () => {
   assert.equal(careDayMinute("12:00"), 0);
   assert.equal(careDayMinute("23:00"), 660);
   assert.equal(careDayMinute("01:00"), 780);
+  assert.equal(careDayMinute("08:00"), 1200);
   assert.ok(careDayMinute("23:00") < careDayMinute("01:00"));
+  assert.ok(careDayMinute("01:00") < careDayMinute("08:00"));
 });
 
 test("Care Day date math remains calendar-safe", () => {
@@ -473,11 +475,11 @@ test("the unified engine keeps the 01:00 BP task after the 23:00 diet task", () 
     careDayKey: "2026-08-14",
     settings: {
       weightReminderEnabled: true,
-      weightReminderTime: "12:00",
+      weightReminderTime: "08:00",
       dietReminderEnabled: true,
       dietReminderTime: "23:00",
       bpReminderEnabled: true,
-      bpMorningReminderTime: "12:10",
+      bpMorningReminderTime: "08:10",
       bpEveningReminderTime: "01:00",
       bpCycleStartDate: "2026-08-14",
       bpCycleEndDate: "2026-08-20",
@@ -489,4 +491,40 @@ test("the unified engine keeps the 01:00 BP task after the 23:00 diet task", () 
     evaluation.tasks.find((task) => task.kind === "blood-pressure-evening").status,
     "upcoming",
   );
+});
+
+test("next-morning reminders become due inside the same noon-to-noon Care Day", () => {
+  const settings = {
+    weightReminderEnabled: true,
+    weightReminderTime: "08:00",
+    bpReminderEnabled: true,
+    bpMorningReminderTime: "08:10",
+    bpEveningReminderTime: "01:00",
+    bpCycleStartDate: "2026-08-14",
+    bpCycleEndDate: "2026-08-20",
+    waistReminderEnabled: true,
+    waistReminderTime: "08:20",
+    waistReminderIntervalDays: 14,
+  };
+  const at0815 = evaluateHealthTasks({
+    now: atTehran("2026-08-15T08:15:00"),
+    careDayKey: "2026-08-14",
+    settings,
+    waistEntries: [{ careDayKey: "2026-07-31" }],
+  });
+  assert.equal(at0815.currentMinute, 1215);
+  assert.equal(at0815.tasks.find((task) => task.kind === "weight").status, "due");
+  assert.equal(
+    at0815.tasks.find((task) => task.kind === "blood-pressure-morning").status,
+    "due",
+  );
+  assert.equal(at0815.tasks.find((task) => task.kind === "waist").status, "upcoming");
+
+  const at0825 = evaluateHealthTasks({
+    now: atTehran("2026-08-15T08:25:00"),
+    careDayKey: "2026-08-14",
+    settings,
+    waistEntries: [{ careDayKey: "2026-07-31" }],
+  });
+  assert.equal(at0825.tasks.find((task) => task.kind === "waist").status, "due");
 });

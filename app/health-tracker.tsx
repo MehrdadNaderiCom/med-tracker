@@ -44,6 +44,7 @@ import type {
 import {
   assessBloodPressureSession,
   careDayKeyForInstant,
+  careDayMinute,
   entryCareDayKey,
   evaluateHealthTasks,
 } from "@/app/health-schedule";
@@ -55,7 +56,7 @@ const SAFE_WEEKLY_LOSS_MIN_KG = 0.45;
 const SAFE_WEEKLY_LOSS_MAX_KG = 0.91;
 const URGENT_READING_WINDOW_MS = 60 * MINUTE_MS;
 const RECENT_SESSION_WINDOW_MS = 12 * 60 * MINUTE_MS;
-const MORNING_BP_WINDOW_END_HOUR = 14;
+const MORNING_BP_WINDOW_END_TIME = "10:00";
 
 const INPUT_CLASS =
   "w-full min-w-0 rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-base text-zinc-950 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:bg-zinc-100 sm:text-sm";
@@ -2688,8 +2689,7 @@ export function HealthTracker({
   const morningBpDone = morningTaskStatus === "complete";
   const morningBpWindowPassed =
     !morningBpDone &&
-    taskEvaluation.currentMinute >=
-      (MORNING_BP_WINDOW_END_HOUR - 12) * 60;
+    taskEvaluation.currentMinute >= careDayMinute(MORNING_BP_WINDOW_END_TIME);
   const bpMissingStreak = taskEvaluation.bloodPressurePlan.missingStreak;
   const dueActions: DueAction[] = [
     ...(settings.weightReminderEnabled
