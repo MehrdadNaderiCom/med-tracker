@@ -1917,6 +1917,21 @@ function isEntryResolved(entry: TodayMedication) {
   return entry.isTaken || Boolean(entry.lapseLogId);
 }
 
+function getIntakeLogCareDayKey(log: IntakeLog) {
+  if (log.status !== "lapse") {
+    return log.date;
+  }
+
+  try {
+    // Avoidance events are reported at the instant they happen. Derive their
+    // noon-to-noon Care Day from that immutable instant so a legacy civil-date
+    // value (for example 00:26 Tehran) cannot reopen the prompt after midnight.
+    return careDayKeyForInstant(log.takenAt);
+  } catch {
+    return log.date;
+  }
+}
+
 function getTodayMedicationLogs(
   logs: IntakeLog[],
   medication: Medication,
@@ -1925,7 +1940,10 @@ function getTodayMedicationLogs(
   time: string | null,
 ) {
   return logs.filter((log) => {
-    if (log.medicationId !== medication.id || log.date !== todayKey) {
+    if (
+      log.medicationId !== medication.id ||
+      getIntakeLogCareDayKey(log) !== todayKey
+    ) {
       return false;
     }
 
@@ -4141,8 +4159,12 @@ export default function MedTrackApp() {
     }
 
     const now = new Date();
-    const occurrenceCareDayKey = entry.dateKey;
+    const occurrenceCareDayKey = careDayKeyForInstant(now);
     const dedupeKey = `${entry.medication.id}:${occurrenceCareDayKey}:lapse`;
+
+    if (entry.dateKey !== occurrenceCareDayKey) {
+      setCareDayKey(occurrenceCareDayKey);
+    }
 
     if (recordedAvoidanceKeys.current.has(dedupeKey)) {
       return;
@@ -4151,7 +4173,7 @@ export default function MedTrackApp() {
     const alreadyRecorded = logs.some(
       (log) =>
         log.medicationId === entry.medication.id &&
-        log.date === occurrenceCareDayKey &&
+        getIntakeLogCareDayKey(log) === occurrenceCareDayKey &&
         log.status === "lapse",
     );
 
@@ -6397,7 +6419,7 @@ function HistoryView({
                         : `${log.dosage} ${log.unit} - ${getLogScheduleLabel(log, routineCategories)}`}
                     </p>
                     <p className="mt-1 text-xs font-medium text-zinc-500">
-                      Care day: {formatCareDayDate(log.date)}
+                      Care day: {formatCareDayDate(getIntakeLogCareDayKey(log))}
                     </p>
                   </div>
                 </div>

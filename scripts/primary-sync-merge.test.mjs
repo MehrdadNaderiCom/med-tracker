@@ -44,7 +44,13 @@ test("stale snapshots preserve medication modes, log outcomes, and plan version"
       },
     ],
     logs: [
-      { id: "lapse-log", medicationId: "hookah", status: "lapse" },
+      {
+        id: "lapse-log",
+        medicationId: "hookah",
+        status: "lapse",
+        date: "2026-08-13",
+        takenAt: "2026-08-13T20:56:02.502Z",
+      },
       { id: "taken-log", medicationId: "medicine", status: "taken" },
     ],
   };
@@ -59,6 +65,8 @@ test("stale snapshots preserve medication modes, log outcomes, and plan version"
         id: "lapse-log",
         medicationId: "hookah",
         status: "taken",
+        date: "2026-08-14",
+        takenAt: "2026-08-14T20:56:02.502Z",
         notes: "stale client rewrite",
       },
       {
@@ -83,6 +91,11 @@ test("stale snapshots preserve medication modes, log outcomes, and plan version"
     "completion",
   );
   assert.equal(findById(merged.logs, "lapse-log").status, "lapse");
+  assert.equal(findById(merged.logs, "lapse-log").date, "2026-08-13");
+  assert.equal(
+    findById(merged.logs, "lapse-log").takenAt,
+    "2026-08-13T20:56:02.502Z",
+  );
   assert.equal(findById(merged.logs, "lapse-log").notes, "stale client rewrite");
   assert.equal(findById(merged.logs, "taken-log").status, "taken");
   assert.equal(findById(merged.logs, "new-lapse-log").status, "lapse");

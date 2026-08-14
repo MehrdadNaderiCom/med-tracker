@@ -59,6 +59,11 @@ test("Tehran 11:59 belongs to the previous Care Day and noon starts the next", (
     careDayKeyForInstant(atTehran("2026-08-14T12:00:00")),
     "2026-08-14",
   );
+  assert.equal(
+    careDayKeyForInstant("2026-08-13T20:56:02.502Z"),
+    "2026-08-13",
+    "00:26 Tehran must remain in the Care Day that began the previous noon",
+  );
 });
 
 test("Care Day minutes correctly order 23:00 before 01:00", () => {

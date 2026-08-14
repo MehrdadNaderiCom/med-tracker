@@ -96,6 +96,19 @@ function mergeLogsById(
       mergedLog.status = existingLog.status;
     }
 
+    // Intake records are immutable for an ID. In particular, keep a corrected
+    // noon-to-noon Care Day and exact occurrence time from being reverted by a
+    // stale tab that still carries the older civil-date interpretation.
+    if (isDateKey(existingLog.date)) {
+      mergedLog.date = existingLog.date;
+    }
+    if (
+      typeof existingLog.takenAt === "string" &&
+      Number.isFinite(Date.parse(existingLog.takenAt))
+    ) {
+      mergedLog.takenAt = existingLog.takenAt;
+    }
+
     logsById.set(id, mergedLog);
   }
 
