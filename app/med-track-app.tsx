@@ -1,6 +1,5 @@
 "use client";
 
-import { addDays, format, isValid, parseISO, subDays } from "date-fns";
 import {
   Activity,
   AlarmClock,
@@ -41,11 +40,22 @@ import { toast } from "sonner";
 import { MedTrackLoading } from "./med-track-loading";
 import HealthTracker from "./health-tracker";
 import {
+  addCareDays,
   averageBloodPressure,
   careDayKeyForInstant,
   entryCareDayKey,
   evaluateHealthTasks,
 } from "./health-schedule";
+import {
+  formatDateKey,
+  formatTehranInstant,
+  formatTimeOfDay,
+  parseDateKey,
+  tehranDateKey,
+  tehranTime24,
+  tehranWallTimeToIso,
+  weekdayIndexForDateKey,
+} from "./tehran-time";
 import {
   createDefaultHealthData,
   mergeHealthData,
@@ -903,19 +913,8 @@ function mergePersonalMedicationPlan(
   return [...nextMedications, ...missingPlanMedications];
 }
 
-function getDateKey(date: Date) {
-  return format(date, "yyyy-MM-dd");
-}
-
 function getTehranTime(date: Date) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Tehran",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.hour}:${values.minute}`;
+  return tehranTime24(date) ?? "--:--";
 }
 
 function showBrowserNotification(title: string, body: string) {
@@ -937,8 +936,7 @@ function showBrowserNotification(title: string, body: string) {
 }
 
 function getDateFromKey(dateKey: string) {
-  const date = parseISO(dateKey);
-  return isValid(date) ? date : null;
+  return parseDateKey(dateKey);
 }
 
 function getDefaultCareDayKey(now: Date) {
@@ -946,11 +944,10 @@ function getDefaultCareDayKey(now: Date) {
 }
 
 function getCareDayRolloverAt(careDayKey: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(careDayKey)) return null;
-  const [year, month, day] = careDayKey.split("-").map(Number);
-  const nextDate = new Date(Date.UTC(year, month - 1, day + 1));
-  const nextKey = nextDate.toISOString().slice(0, 10);
-  return new Date(`${nextKey}T12:00:00+03:30`);
+  if (!parseDateKey(careDayKey)) return null;
+  const nextKey = addCareDays(careDayKey, 1);
+  const rolloverIso = tehranWallTimeToIso(`${nextKey}T12:00`);
+  return rolloverIso ? new Date(rolloverIso) : null;
 }
 
 function resolveCareDayKey(storedCareDayKey: string, now: Date) {
@@ -971,8 +968,9 @@ function resolveCareDayKey(storedCareDayKey: string, now: Date) {
 }
 
 function getNextCareDayKey(careDayKey: string) {
-  const careDayDate = getDateFromKey(careDayKey) ?? new Date();
-  return getDateKey(addDays(careDayDate, 1));
+  return getDateFromKey(careDayKey)
+    ? addCareDays(careDayKey, 1)
+    : getDefaultCareDayKey(new Date());
 }
 
 function normalizeReminderSettings(value: unknown): ReminderSettings {
@@ -1641,7 +1639,13 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
     return null;
   }
 
-  const takenAt = normalizeString(value.takenAt, new Date().toISOString());
+  const takenAtCandidate = normalizeString(
+    value.takenAt,
+    new Date().toISOString(),
+  );
+  const takenAt = Number.isFinite(Date.parse(takenAtCandidate))
+    ? takenAtCandidate
+    : new Date().toISOString();
   const scheduledTime = normalizeTime(value.scheduledTime);
   const scheduleType = isMedicationScheduleType(value.scheduleType)
     ? value.scheduleType
@@ -1679,7 +1683,8 @@ function normalizeIntakeLog(value: unknown): IntakeLog | null {
         ? groupName
         : undefined,
     takenAt,
-    date: normalizeString(value.date, takenAt.slice(0, 10)),
+    date:
+      normalizeOptionalDateKey(value.date) ?? careDayKeyForInstant(takenAt),
     status: value.status === "lapse" ? "lapse" : "taken",
     notes:
       typeof value.notes === "string" && value.notes.length > 0
@@ -1783,35 +1788,35 @@ function readStoredNumber(key: string) {
 }
 
 function formatLogDate(value: string) {
-  try {
-    return format(parseISO(value), "MMM d, yyyy h:mm a");
-  } catch {
-    return value;
-  }
+  return (
+    formatTehranInstant(value, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }) ?? value
+  );
 }
 
 function formatCareDayDate(value: string) {
-  try {
-    return format(parseISO(value), "MMM d, yyyy");
-  } catch {
-    return value;
-  }
+  return (
+    formatDateKey(value, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }) ?? value
+  );
 }
 
 function formatReadableTime(value: string) {
-  const [hourValue, minuteValue] = value.split(":");
-  const date = new Date();
-  date.setHours(Number(hourValue), Number(minuteValue), 0, 0);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return format(date, "h:mm a");
+  return formatTimeOfDay(value) ?? value;
 }
 
-function getTodayDay(date: Date): WeekDay {
-  return WEEK_DAYS[date.getDay()].id;
+function getDayForDateKey(dateKey: string): WeekDay | null {
+  const weekdayIndex = weekdayIndexForDateKey(dateKey);
+  return weekdayIndex === null ? null : WEEK_DAYS[weekdayIndex].id;
 }
 
 function getMedicationDaysLabel(schedule: Medication["schedule"]) {
@@ -1834,14 +1839,15 @@ function getMedicationDaysLabel(schedule: Medication["schedule"]) {
     .join(", ");
 }
 
-function isMedicationDueOnDate(medication: Medication, date: Date) {
+function isMedicationDueOnDate(medication: Medication, dateKey: string) {
   const dayMode = getMedicationDayMode(medication.schedule);
 
   if (dayMode === "daily") {
     return true;
   }
 
-  const todayDay = getTodayDay(date);
+  const todayDay = getDayForDateKey(dateKey);
+  if (!todayDay) return false;
 
   if (dayMode === "even-dates") {
     return EVEN_ROUTINE_DAYS.includes(todayDay);
@@ -1937,7 +1943,6 @@ function getTodayMedicationLogs(
 function buildMedicationEntriesForDate(
   medications: Medication[],
   logs: IntakeLog[],
-  date: Date,
   dateKey: string,
 ) {
   const entries: TodayMedication[] = [];
@@ -1946,7 +1951,7 @@ function buildMedicationEntriesForDate(
     .filter(
       (medication) =>
         isMedicationTrackableOnDate(medication, dateKey) &&
-        isMedicationDueOnDate(medication, date),
+        isMedicationDueOnDate(medication, dateKey),
     )
     .forEach((medication) => {
       const scheduleType = getMedicationScheduleType(medication);
@@ -2026,33 +2031,33 @@ function buildMedicationEntriesForDate(
 function getAdherenceDaySeries(
   medications: Medication[],
   logs: IntakeLog[],
-  endDate: Date,
+  endDateKey: string,
   dayCount: number,
 ): AdherenceDayPoint[] {
   const safeDayCount = Math.max(1, dayCount);
   const points: AdherenceDayPoint[] = [];
 
   for (let dayOffset = safeDayCount - 1; dayOffset >= 0; dayOffset -= 1) {
-    const date = subDays(endDate, dayOffset);
-    const dateKey = getDateKey(date);
-    const entries = buildMedicationEntriesForDate(
-      medications,
-      logs,
-      date,
-      dateKey,
-    );
+    const dateKey = addCareDays(endDateKey, -dayOffset);
+    const entries = buildMedicationEntriesForDate(medications, logs, dateKey);
     const due = entries.length;
     const taken = entries.filter((entry) => entry.isTaken).length;
 
     points.push({
       dateKey,
-      label: format(date, "MMM d, yyyy"),
+      label:
+        formatDateKey(dateKey, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }) ?? dateKey,
       shortLabel:
         safeDayCount <= 7
-          ? format(date, "EEE")
+          ? (formatDateKey(dateKey, { weekday: "short" }) ?? dateKey)
           : safeDayCount <= 90
-            ? format(date, "MMM d")
-            : format(date, "MMM"),
+            ? (formatDateKey(dateKey, { month: "short", day: "numeric" }) ??
+              dateKey)
+            : (formatDateKey(dateKey, { month: "short" }) ?? dateKey),
       due,
       taken,
       rate: due === 0 ? 0 : Math.round((taken / due) * 100),
@@ -2065,10 +2070,15 @@ function getAdherenceDaySeries(
 function getAdherenceStats(
   medications: Medication[],
   logs: IntakeLog[],
-  endDate: Date,
+  endDateKey: string,
   dayCount = 7,
 ): AdherenceStats {
-  const series = getAdherenceDaySeries(medications, logs, endDate, dayCount);
+  const series = getAdherenceDaySeries(
+    medications,
+    logs,
+    endDateKey,
+    dayCount,
+  );
   let due = 0;
   let taken = 0;
   let streak = 0;
@@ -2117,7 +2127,7 @@ function buildReportEntryDetail(
 function getReportDayDetails(
   medications: Medication[],
   logs: IntakeLog[],
-  endDate: Date,
+  endDateKey: string,
   dayCount: number,
   routineCategories: RoutineCategory[],
 ): ReportDayDetail[] {
@@ -2125,27 +2135,29 @@ function getReportDayDetails(
   const days: ReportDayDetail[] = [];
 
   for (let dayOffset = 0; dayOffset < safeDayCount; dayOffset += 1) {
-    const date = subDays(endDate, dayOffset);
-    const dateKey = getDateKey(date);
-    const entries = buildMedicationEntriesForDate(
-      medications,
-      logs,
-      date,
-      dateKey,
-    );
+    const dateKey = addCareDays(endDateKey, -dayOffset);
+    const entries = buildMedicationEntriesForDate(medications, logs, dateKey);
     const due = entries.length;
     const taken = entries.filter((entry) => entry.isTaken).length;
 
     days.push({
       dateKey,
-      label: format(date, "EEEE, MMM d, yyyy"),
+      label:
+        formatDateKey(dateKey, {
+          weekday: "long",
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }) ?? dateKey,
       shortLabel:
         safeDayCount <= 7
-          ? format(date, "EEE")
+          ? (formatDateKey(dateKey, { weekday: "short" }) ?? dateKey)
           : safeDayCount <= 90
-            ? format(date, "MMM d")
-            : format(date, "MMM"),
-      weekdayLabel: format(date, "EEEE"),
+            ? (formatDateKey(dateKey, { month: "short", day: "numeric" }) ??
+              dateKey)
+            : (formatDateKey(dateKey, { month: "short" }) ?? dateKey),
+      weekdayLabel:
+        formatDateKey(dateKey, { weekday: "long" }) ?? dateKey,
       due,
       taken,
       rate: due === 0 ? 0 : Math.round((taken / due) * 100),
@@ -2375,13 +2387,21 @@ export default function MedTrackApp() {
     });
   }
 
-  const careDayDate = useMemo(
-    () => (careDayKey ? getDateFromKey(careDayKey) : null),
-    [careDayKey],
-  );
   const todayKey = careDayKey;
-  const todayLabel = careDayDate ? format(careDayDate, "EEEE, MMMM d") : "";
-  const currentClockLabel = today ? format(today, "h:mm a") : "";
+  const todayLabel = careDayKey
+    ? (formatDateKey(careDayKey, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      }) ?? careDayKey)
+    : "";
+  const currentClockLabel = today
+    ? (formatTehranInstant(today, {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }) ?? "")
+    : "";
 
   useEffect(() => {
     let isCancelled = false;
@@ -2757,7 +2777,7 @@ export default function MedTrackApp() {
   );
 
   const todayMedications = useMemo<TodayMedication[]>(() => {
-    if (!careDayDate || !todayKey || !today) {
+    if (!todayKey || !today) {
       return [];
     }
 
@@ -2766,7 +2786,6 @@ export default function MedTrackApp() {
         (medication) => medication.trackingMode !== "avoidance",
       ),
       logs,
-      careDayDate,
       todayKey,
     );
     // Avoidance outcomes use the same noon-to-noon Care Day as every other
@@ -2776,12 +2795,11 @@ export default function MedTrackApp() {
         (medication) => medication.trackingMode === "avoidance",
       ),
       logs,
-      careDayDate,
       todayKey,
     );
 
     return [...completionEntries, ...avoidanceEntries];
-  }, [activeMedications, careDayDate, logs, today, todayKey]);
+  }, [activeMedications, logs, today, todayKey]);
 
   const sortedLogs = useMemo(
     () =>
@@ -2801,10 +2819,10 @@ export default function MedTrackApp() {
       getAdherenceStats(
         medications,
         logs,
-        careDayDate ?? today ?? new Date(),
+        todayKey || getDefaultCareDayKey(today ?? new Date()),
         7,
       ),
-    [careDayDate, logs, medications, today],
+    [logs, medications, today, todayKey],
   );
 
   const orderedMedicationGroups = useMemo<OrderedMedicationGroup[]>(() => {
@@ -2880,7 +2898,7 @@ export default function MedTrackApp() {
       return;
     }
 
-    const currentTime = format(today, "HH:mm");
+    const currentTime = getTehranTime(today);
 
     orderedMedicationGroups
       .filter((group) => !group.isTaken)
@@ -3488,7 +3506,9 @@ export default function MedTrackApp() {
       return;
     }
 
-    const actualTodayKey = getDateKey(today ?? new Date());
+    const actualTodayKey =
+      tehranDateKey(today ?? new Date()) ??
+      getDefaultCareDayKey(today ?? new Date());
 
     if (todayKey >= actualTodayKey) {
       toast.error("Today is already the current care day");
@@ -3508,7 +3528,10 @@ export default function MedTrackApp() {
     const nextCareDayKey = getNextCareDayKey(todayKey);
     setCareDayKey(nextCareDayKey);
     notifiedReminderKeys.current.clear();
-    toast.success(`Care day moved to ${format(parseISO(nextCareDayKey), "MMM d")}`, {
+    toast.success(`Care day moved to ${
+      formatDateKey(nextCareDayKey, { month: "short", day: "numeric" }) ??
+      nextCareDayKey
+    }`, {
       action: {
         label: "Undo",
         onClick: () => setCareDayKey(previousCareDayKey),
@@ -3988,8 +4011,8 @@ export default function MedTrackApp() {
       return;
     }
 
-    const lastTrackableDateKey = careDayDate
-      ? getDateKey(subDays(careDayDate, 1))
+    const lastTrackableDateKey = todayKey
+      ? addCareDays(todayKey, -1)
       : medication.activeUntil;
 
     setMedications((currentMedications) =>
@@ -4307,7 +4330,7 @@ export default function MedTrackApp() {
     );
   }
 
-  if (!isStorageReady || !today || !todayKey || !careDayDate) {
+  if (!isStorageReady || !today || !todayKey) {
     return <MedTrackLoading />;
   }
 
@@ -4510,7 +4533,7 @@ export default function MedTrackApp() {
             <ReportsView
               medications={medications}
               logs={logs}
-              careDayDate={careDayDate}
+              careDayKey={todayKey}
               categories={categories}
               routineCategories={routineCategories}
             />
@@ -4767,6 +4790,11 @@ function DashboardHealthCard({
           <strong className="mt-0.5 block text-zinc-950">
             {average ? `${average.systolic}/${average.diastolic}` : "Record now"}
           </strong>
+          {typeof average?.pulseBpm === "number" ? (
+            <span className="mt-0.5 block text-xs text-zinc-500">
+              Pulse {Math.round(average.pulseBpm)} bpm
+            </span>
+          ) : null}
         </div>
       </div>
     </button>
@@ -5051,7 +5079,7 @@ function DashboardView({
                 </span>
               </div>
               <p className="mt-1 hidden max-w-2xl text-sm text-zinc-500 sm:block">
-                Current clock: {currentClockLabel}. This care day stays open
+                Current clock: {currentClockLabel} Iran time. This care day stays open
                 past midnight and rolls over automatically after noon tomorrow,
                 unless you end it manually.
               </p>
@@ -5979,7 +6007,7 @@ function MedicationFormView({
         {form.scheduleType === "timed" ? (
           <div className="mt-6">
             <span className="mb-2 block text-sm font-medium text-zinc-700">
-              Times
+              Times (Iran time)
             </span>
             <div className="flex flex-col gap-3 sm:flex-row">
               <input
@@ -6187,11 +6215,9 @@ function HistoryView({
   onDeleteLog: (log: IntakeLog) => void;
 }) {
   const [selectedDate, setSelectedDate] = useState(careDayKey);
-  const selectedDateObject = getDateFromKey(selectedDate) ?? new Date();
   const backfillEntries = buildMedicationEntriesForDate(
     activeMedications,
     logs,
-    selectedDateObject,
     selectedDate,
   ).filter((entry) => !isAvoidanceEntry(entry));
   const missingEntries = backfillEntries.filter(
@@ -6675,7 +6701,8 @@ function SettingsView({
                 This switch covers medication and health alerts. In-app toasts and
                 supported foreground browser alerts work while MedTrack is open. A
                 closed or suspended mobile app cannot yet receive scheduled alerts
-                reliably.
+                reliably. Every reminder below uses Iran time (Asia/Tehran), regardless
+                of the phone or browser time zone.
               </p>
             </div>
 
@@ -6838,19 +6865,19 @@ function SyncStatusPanel({
 function ReportsView({
   medications,
   logs,
-  careDayDate,
+  careDayKey,
   categories,
   routineCategories,
 }: {
   medications: Medication[];
   logs: IntakeLog[];
-  careDayDate: Date;
+  careDayKey: string;
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
 }) {
   const [rangeId, setRangeId] = useState<AdherenceRangeId>("7d");
   const [expandedDayKey, setExpandedDayKey] = useState<string | null>(
-    getDateKey(careDayDate),
+    careDayKey,
   );
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const dayCount =
@@ -6861,11 +6888,11 @@ function ReportsView({
       getReportDayDetails(
         medications,
         logs,
-        careDayDate,
+        careDayKey,
         dayCount,
         routineCategories,
       ),
-    [careDayDate, dayCount, logs, medications, routineCategories],
+    [careDayKey, dayCount, logs, medications, routineCategories],
   );
 
   const series = useMemo(
@@ -6909,7 +6936,7 @@ function ReportsView({
         rangeId={rangeId}
         onRangeChange={(nextRangeId) => {
           setRangeId(nextRangeId);
-          setExpandedDayKey(getDateKey(careDayDate));
+          setExpandedDayKey(careDayKey);
         }}
         series={series}
       />

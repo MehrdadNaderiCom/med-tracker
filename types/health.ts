@@ -11,6 +11,7 @@ export interface WeightEntry {
 export interface BloodPressureReading {
   systolic: number;
   diastolic: number;
+  /** Required by the new-reading form; absent only on retained legacy data. */
   pulseBpm?: number;
   /** Absent on legacy readings whose individual measurement time was not stored. */
   measuredAt?: string;

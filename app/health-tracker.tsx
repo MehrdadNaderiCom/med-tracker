@@ -48,6 +48,10 @@ import {
   entryCareDayKey,
   evaluateHealthTasks,
 } from "@/app/health-schedule";
+import {
+  normalizeNewBloodPressureReading,
+  type NewBloodPressureReading,
+} from "@/app/health-data";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
@@ -617,6 +621,28 @@ function BloodPressureChart({
       : padding.left + (index / (points.length - 1)) * plotWidth;
   const yForValue = (value: number) =>
     padding.top + ((maximum - value) / range) * plotHeight;
+  const pulsePoints = points.flatMap((point, pointIndex) =>
+    typeof point.pulseBpm === "number"
+      ? [{ measuredAt: point.measuredAt, pointIndex, pulseBpm: point.pulseBpm }]
+      : [],
+  );
+  const pulseValues = pulsePoints.map((point) => point.pulseBpm);
+  const pulseMinimum =
+    pulseValues.length > 0
+      ? Math.max(20, Math.floor((Math.min(...pulseValues) - 5) / 10) * 10)
+      : 40;
+  const pulseMaximum =
+    pulseValues.length > 0
+      ? Math.max(
+          pulseMinimum + 20,
+          Math.ceil((Math.max(...pulseValues) + 5) / 10) * 10,
+        )
+      : 120;
+  const pulseRange = pulseMaximum - pulseMinimum;
+  const pulseHeight = 170;
+  const pulsePlotHeight = pulseHeight - padding.top - padding.bottom;
+  const pulseYForValue = (value: number) =>
+    padding.top + ((pulseMaximum - value) / pulseRange) * pulsePlotHeight;
 
   return (
     <div className="overflow-hidden rounded-md border border-zinc-200 bg-white p-2">
@@ -728,6 +754,87 @@ function BloodPressureChart({
           {formatShortDate(points.at(-1)?.measuredAt ?? "")}
         </text>
       </svg>
+      {pulsePoints.length > 0 ? (
+        <div className="mt-2 border-t border-zinc-100 pt-2">
+          <div className="px-2 text-xs font-medium text-zinc-600">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-1 w-5 rounded-full bg-violet-600" /> Pulse average
+              (bpm)
+            </span>
+          </div>
+          <svg
+            className="h-36 w-full"
+            viewBox={`0 0 ${width} ${pulseHeight}`}
+            role="img"
+            aria-labelledby="pulse-chart-title pulse-chart-description"
+          >
+            <title id="pulse-chart-title">Pulse averages by blood pressure session</title>
+            <desc id="pulse-chart-description">
+              Average pulse in beats per minute for each blood pressure session that
+              includes pulse. Legacy sessions without pulse are omitted.
+            </desc>
+            {[pulseMinimum, pulseMinimum + pulseRange / 2, pulseMaximum].map(
+              (value) => {
+                const y = pulseYForValue(value);
+                return (
+                  <g key={value}>
+                    <line
+                      x1={padding.left}
+                      x2={width - padding.right}
+                      y1={y}
+                      y2={y}
+                      stroke="#e4e4e7"
+                    />
+                    <text x="3" y={y + 4} fill="#71717a" fontSize="12">
+                      {Math.round(value)}
+                    </text>
+                  </g>
+                );
+              },
+            )}
+            <path
+              d={linePath(
+                pulseValues,
+                (index) => xForIndex(pulsePoints[index].pointIndex),
+                pulseYForValue,
+              )}
+              fill="none"
+              stroke="#7c3aed"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            {pulsePoints.map((point) => (
+              <circle
+                key={`${point.measuredAt}-${point.pointIndex}`}
+                cx={xForIndex(point.pointIndex)}
+                cy={pulseYForValue(point.pulseBpm)}
+                r="3"
+                fill="#6d28d9"
+              >
+                <title>{`${Math.round(point.pulseBpm)} bpm — ${formatShortDate(point.measuredAt)}`}</title>
+              </circle>
+            ))}
+            <text x={padding.left} y={pulseHeight - 8} fill="#71717a" fontSize="12">
+              {formatShortDate(points[0].measuredAt)}
+            </text>
+            <text
+              x={width - padding.right}
+              y={pulseHeight - 8}
+              fill="#71717a"
+              fontSize="12"
+              textAnchor="end"
+            >
+              {formatShortDate(points.at(-1)?.measuredAt ?? "")}
+            </text>
+          </svg>
+        </div>
+      ) : (
+        <p className="border-t border-zinc-100 px-2 py-3 text-xs text-zinc-500">
+          Pulse trend begins with the next reading that includes pulse; legacy blood
+          pressure records remain unchanged.
+        </p>
+      )}
     </div>
   );
 }
@@ -839,7 +946,7 @@ function WeightForm({
           />
         </label>
         <label>
-          <span className={LABEL_CLASS}>Measured at</span>
+          <span className={LABEL_CLASS}>Measured at (Iran time)</span>
           <input
             className={INPUT_CLASS}
             type="datetime-local"
@@ -1014,27 +1121,16 @@ function BloodPressureForm({
     systolicValue: string,
     diastolicValue: string,
     pulseValue: string,
-  ): BloodPressureReading | null {
+  ): NewBloodPressureReading | null {
     const systolic = parseNumber(systolicValue);
     const diastolic = parseNumber(diastolicValue);
     const pulse = parseNumber(pulseValue);
-    if (
-      systolic === null ||
-      diastolic === null ||
-      systolic < 50 ||
-      systolic > 280 ||
-      diastolic < 30 ||
-      diastolic > 180 ||
-      systolic <= diastolic ||
-      (pulseValue.trim() !== "" && (pulse === null || pulse < 25 || pulse > 240))
-    ) {
-      return null;
-    }
-    return {
+    if (systolic === null || diastolic === null || pulse === null) return null;
+    return normalizeNewBloodPressureReading({
       systolic: Math.round(systolic),
       diastolic: Math.round(diastolic),
-      pulseBpm: pulse === null ? undefined : Math.round(pulse),
-    };
+      pulseBpm: Math.round(pulse),
+    });
   }
 
   function buildSession(
@@ -1071,7 +1167,7 @@ function BloodPressureForm({
     const iso = toIsoTimestamp(measuredAt);
     if (!first) {
       setMessage(
-        "Enter systolic 50–280, diastolic 30–180, and optional pulse 25–240. Systolic must be higher than diastolic. If the device genuinely shows a value outside this guardrail or you feel very unwell, repeat promptly and seek urgent medical help rather than dismissing it as a form error.",
+        "Enter systolic 50–280, diastolic 30–180, and pulse 25–240 for this reading. Pulse is required. Systolic must be higher than diastolic. If the device genuinely shows a value outside this guardrail or you feel very unwell, repeat promptly and seek urgent medical help rather than dismissing it as a form error.",
       );
       return;
     }
@@ -1106,7 +1202,7 @@ function BloodPressureForm({
     if (!savedPartial || !secondReady) return;
     const second = readingFromFields(secondSystolic, secondDiastolic, secondPulse);
     if (!second) {
-      setMessage("Enter a valid second systolic, diastolic, and optional pulse.");
+      setMessage("Enter a valid second systolic, diastolic, and pulse. Pulse is required.");
       return;
     }
     const savedAt = new Date().toISOString();
@@ -1194,9 +1290,10 @@ function BloodPressureForm({
         For 30 minutes beforehand, avoid caffeine, alcohol, smoking, and exercise.
         Empty your bladder, then sit quietly for at least 5 minutes with back supported,
         feet flat, and legs uncrossed. Use a validated upper-arm cuff that fits your arm
-        on bare skin; support the arm at heart level and do not talk. Save reading 1,
-        stay seated, then take reading 2 on the same arm after the one-minute timer.
-        Never delay or skip medicine just to measure first.
+        on bare skin; support the arm at heart level and do not talk. Enter the pulse
+        shown by the monitor with every new reading. Save reading 1, stay seated, then
+        take reading 2 on the same arm after the one-minute timer. Never delay or skip
+        medicine just to measure first.
       </div>
       <details className="mt-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs leading-5 text-zinc-700">
         <summary className="flex min-h-11 cursor-pointer items-center font-semibold text-zinc-800">
@@ -1213,7 +1310,7 @@ function BloodPressureForm({
       </details>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label>
-          <span className={LABEL_CLASS}>Session time</span>
+          <span className={LABEL_CLASS}>Session time (Iran time)</span>
           <input
             className={INPUT_CLASS}
             type="datetime-local"
@@ -1289,21 +1386,30 @@ function BloodPressureForm({
               />
             </label>
             <label>
-              <span className="mb-1 block text-xs text-zinc-500">Pulse</span>
+              <span className="mb-1 block text-xs text-zinc-500">
+                Pulse <span aria-hidden="true">*</span>
+              </span>
               <input
-                aria-label="First pulse reading, optional"
+                aria-label="First pulse reading, required"
                 className={INPUT_CLASS}
                 type="number"
                 inputMode="numeric"
                 min="25"
                 max="240"
+                required
                 value={firstPulse}
                 disabled={Boolean(savedPartial)}
                 onChange={(event) => setFirstPulse(event.target.value)}
-                placeholder="—"
+                placeholder="72"
               />
             </label>
           </div>
+          {savedPartial && firstPulse === "" ? (
+            <p className="mt-2 text-xs leading-5 text-zinc-500">
+              This legacy reading did not include pulse. It remains saved; pulse is
+              required for every new reading.
+            </p>
+          ) : null}
         </fieldset>
         <fieldset className="rounded-md border border-zinc-200 bg-white p-3">
           <legend className="px-1 text-sm font-semibold text-zinc-800">
@@ -1361,18 +1467,21 @@ function BloodPressureForm({
               />
             </label>
             <label>
-              <span className="mb-1 block text-xs text-zinc-500">Pulse</span>
+              <span className="mb-1 block text-xs text-zinc-500">
+                Pulse <span aria-hidden="true">*</span>
+              </span>
               <input
-                aria-label="Second pulse reading, optional"
+                aria-label="Second pulse reading, required"
                 className={INPUT_CLASS}
                 type="number"
                 inputMode="numeric"
                 min="25"
                 max="240"
+                required
                 value={secondPulse}
                 disabled={!savedPartial || !secondReady || pairWindowExpired}
                 onChange={(event) => setSecondPulse(event.target.value)}
-                placeholder="—"
+                placeholder="72"
               />
             </label>
           </div>
@@ -1731,7 +1840,7 @@ function DietForm({
       </fieldset>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label>
-          <span className={LABEL_CLASS}>Check-in time</span>
+          <span className={LABEL_CLASS}>Check-in time (Iran time)</span>
           <input
             className={INPUT_CLASS}
             type="datetime-local"
@@ -1848,7 +1957,7 @@ function WaistForm({
           <input className={INPUT_CLASS} type="number" inputMode="decimal" min="30" max="250" step="0.1" required value={value} onChange={(event) => setValue(event.target.value)} />
         </label>
         <label>
-          <span className={LABEL_CLASS}>Measured at</span>
+          <span className={LABEL_CLASS}>Measured at (Iran time)</span>
           <input className={INPUT_CLASS} type="datetime-local" required max={toDateTimeLocal(new Date(now.getTime() + 10 * MINUTE_MS))} value={measuredAt} onChange={(event) => setMeasuredAt(event.target.value)} />
         </label>
         <label>
@@ -2281,7 +2390,8 @@ function SettingsPanel({
           <strong>Reminder limits:</strong> these controls store reminder preferences.
           Alerts from this screen are dependable only while the app is open. Background
           or closed-app notifications require separate service-worker or server delivery
-          and are not guaranteed here.
+          and are not guaranteed here. Every entry and reminder time below is Iran time
+          (Asia/Tehran), regardless of the phone or browser time zone.
         </div>
 
         <fieldset className="mt-4 rounded-md border border-zinc-200 p-3">
@@ -3212,7 +3322,12 @@ export function HealthTracker({
                 ? `${Math.round(latestBpAverage.systolic)}/${Math.round(latestBpAverage.diastolic)}`
                 : "—"}
             </p>
-            <p className="text-xs text-zinc-500">mm Hg</p>
+            <p className="text-xs text-zinc-500">
+              mm Hg
+              {typeof latestBpAverage?.pulseBpm === "number"
+                ? ` · pulse ${Math.round(latestBpAverage.pulseBpm)} bpm`
+                : " · pulse not recorded"}
+            </p>
           </div>
           <div className="rounded-md bg-zinc-50 p-3">
             <p className="text-xs font-medium text-zinc-500">Latest range</p>
@@ -3330,14 +3445,21 @@ export function HealthTracker({
                           <div>
                             <p className="text-sm font-semibold">
                               {Math.round(average.systolic)}/{Math.round(average.diastolic)} average
+                              {average.pulseBpm !== null
+                                ? ` · ${Math.round(average.pulseBpm)} bpm pulse average`
+                                : " · pulse not recorded"}
                             </p>
                             <p className="mt-0.5 text-xs text-zinc-500">
                               {session.readings
                                 .map(
                                   (reading) =>
-                                    `${reading?.systolic}/${reading?.diastolic}`,
+                                    `${reading.systolic}/${reading.diastolic} · ${
+                                      typeof reading.pulseBpm === "number"
+                                        ? `${reading.pulseBpm} bpm`
+                                        : "pulse not recorded"
+                                    }`,
                                 )
-                                .join(" · ")}
+                                .join(" | ")}
                               {session.readings.length === 1
                                 ? " · single reading (incomplete pair)"
                                 : ""}

@@ -7,6 +7,7 @@ import type {
   BloodPressureMedicationTiming,
   BloodPressurePeriod,
   BloodPressurePosition,
+  BloodPressureReading,
   BloodPressureSession,
   BloodPressureSymptom,
   DietAdherence,
@@ -240,6 +241,23 @@ function normalizePressureReading(value: unknown) {
       ? { measuredAt: value.measuredAt as string }
       : {}),
   };
+}
+
+export type NewBloodPressureReading = BloodPressureReading & {
+  pulseBpm: number;
+};
+
+/**
+ * New readings must include the pulse shown by the monitor. The storage
+ * normalizer above deliberately stays permissive so legacy readings without a
+ * pulse remain readable and syncable.
+ */
+export function normalizeNewBloodPressureReading(
+  value: unknown,
+): NewBloodPressureReading | null {
+  const reading = normalizePressureReading(value);
+  if (!reading || typeof reading.pulseBpm !== "number") return null;
+  return reading as NewBloodPressureReading;
 }
 
 function normalizeBloodPressureSession(

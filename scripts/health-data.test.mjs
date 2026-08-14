@@ -33,6 +33,7 @@ const {
   createDefaultHealthData,
   mergeHealthData,
   normalizeHealthData,
+  normalizeNewBloodPressureReading,
 } = healthDataModule.exports;
 
 const profileUpdatedAt = "2026-08-10T10:00:00.000Z";
@@ -125,6 +126,53 @@ test("legacy two-reading BP sessions retain values and receive neutral context d
   assert.equal(session.medicationTiming, "unknown");
   assert.equal(session.standardConditions, null);
   assert.equal(session.irregularHeartbeat, null);
+});
+
+test("new BP readings require pulse while legacy pulse-less readings remain valid", () => {
+  assert.equal(
+    normalizeNewBloodPressureReading({ systolic: 124, diastolic: 76 }),
+    null,
+  );
+  assert.equal(
+    normalizeNewBloodPressureReading({
+      systolic: 124,
+      diastolic: 76,
+      pulseBpm: 241,
+    }),
+    null,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        normalizeNewBloodPressureReading({
+          systolic: 124,
+          diastolic: 76,
+          pulseBpm: 58,
+        }),
+      ),
+    ),
+    { systolic: 124, diastolic: 76, pulseBpm: 58 },
+  );
+
+  const legacyWithoutPulse = {
+    id: "legacy-bp-without-pulse",
+    measuredAt: "2026-08-13T15:45:00.000Z",
+    period: "evening",
+    readings: [
+      { systolic: 123, diastolic: 78 },
+      { systolic: 125, diastolic: 75 },
+    ],
+    createdAt: "2026-08-13T15:45:00.000Z",
+    updatedAt: "2026-08-13T15:47:00.000Z",
+  };
+  const normalized = normalizeHealthData(
+    legacyV3({ bloodPressureSessions: [legacyWithoutPulse] }),
+  );
+  const readings = normalized.bloodPressureSessions[0].readings;
+
+  assert.equal(readings.length, 2);
+  assert.equal("pulseBpm" in readings[0], false);
+  assert.equal("pulseBpm" in readings[1], false);
 });
 
 test("a schema-v4 profile retains its date-only waist measurement date", () => {
