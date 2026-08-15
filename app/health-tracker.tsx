@@ -19,8 +19,13 @@ import {
   Ruler,
   Dumbbell,
 } from "lucide-react";
-import type { FormEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type {
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   ActivityCheckIn,
   BloodPressureArm,
@@ -82,6 +87,59 @@ const EMERGENCY_SYMPTOMS: {
   { id: "vision-change", label: "Sudden vision change" },
   { id: "difficulty-speaking", label: "Sudden difficulty speaking" },
 ];
+
+const BP_PERIOD_LABELS: Record<BloodPressurePeriod, string> = {
+  morning: "After waking",
+  evening: "Before sleep",
+  other: "Other time",
+};
+
+const BP_ARM_LABELS: Record<BloodPressureArm, string> = {
+  left: "Left arm",
+  right: "Right arm",
+  unknown: "Arm not recorded",
+};
+
+const BP_POSITION_LABELS: Record<BloodPressurePosition, string> = {
+  seated: "Seated",
+  standing: "Standing",
+  lying: "Lying down",
+  unknown: "Position not recorded",
+};
+
+const BP_CUFF_SITE_LABELS: Record<BloodPressureCuffSite, string> = {
+  "upper-arm": "Upper-arm cuff",
+  wrist: "Wrist cuff",
+  other: "Other cuff site",
+  unknown: "Cuff site not recorded",
+};
+
+const BP_MEDICATION_TIMING_LABELS: Record<BloodPressureMedicationTiming, string> = {
+  "before-dose": "Before blood-pressure medicine",
+  "after-dose": "After blood-pressure medicine",
+  unknown: "Medicine timing not recorded",
+};
+
+const BP_CONTEXT_LABELS: Record<BloodPressureContextFlag, string> = {
+  caffeine: "Caffeine within 30 minutes",
+  nicotine: "Nicotine or hookah within 30 minutes",
+  exercise: "Exercise within 30 minutes",
+  alcohol: "Alcohol within 30 minutes",
+  meal: "Recent meal",
+  "full-bladder": "Full bladder",
+  talking: "Talking during measurement",
+  "not-rested": "Did not rest for 5 minutes",
+  other: "Other non-standard condition",
+};
+
+const BP_SYMPTOM_LABELS: Record<BloodPressureSymptom, string> = {
+  dizziness: "Dizziness",
+  fainting: "Fainting",
+  nausea: "Nausea",
+  confusion: "Confusion",
+  "blurred-vision": "Blurred vision",
+  palpitations: "Palpitations",
+};
 
 type MaybePromise = void | Promise<void>;
 
@@ -203,12 +261,26 @@ function toIsoTimestamp(localValue: string) {
 function formatDateTime(value: string) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "Invalid date";
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("en-US", {
     timeZone: HEALTH_TIME_ZONE,
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+  }).format(date);
+}
+
+function formatChartDateTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Invalid date";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: HEALTH_TIME_ZONE,
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
   }).format(date);
 }
 
@@ -413,18 +485,25 @@ function sortByMeasuredAt<T extends { measuredAt: string }>(entries: T[]) {
 
 function rollingWeightTrend(entries: WeightEntry[]) {
   const sorted = sortByMeasuredAt(entries);
-  return sorted.map((entry) => {
+  return sorted.map((entry, index) => {
     const timestamp = new Date(entry.measuredAt).getTime();
     const windowEntries = sorted.filter((candidate) => {
       const candidateTime = new Date(candidate.measuredAt).getTime();
       return candidateTime <= timestamp && candidateTime > timestamp - 7 * DAY_MS;
     });
+    const trend =
+      windowEntries.reduce((total, candidate) => total + candidate.weightKg, 0) /
+      windowEntries.length;
     return {
+      id: entry.id,
+      entry,
       measuredAt: entry.measuredAt,
       raw: entry.weightKg,
-      trend:
-        windowEntries.reduce((total, candidate) => total + candidate.weightKg, 0) /
-        windowEntries.length,
+      trend,
+      trendMeasurementCount: windowEntries.length,
+      differenceFromTrend: entry.weightKg - trend,
+      differenceFromPrevious:
+        index > 0 ? entry.weightKg - sorted[index - 1].weightKg : null,
     };
   });
 }
@@ -465,6 +544,58 @@ function linePath(
     .join(" ");
 }
 
+function formatChartNumber(value: number, digits = 1) {
+  const threshold = 0.5 * 10 ** -digits;
+  const normalized = Math.abs(value) < threshold ? 0 : value;
+  return Number.isInteger(normalized)
+    ? normalized.toFixed(0)
+    : normalized.toFixed(digits);
+}
+
+function nearestSequentialPointIndex(
+  event:
+    | ReactPointerEvent<SVGRectElement>
+    | ReactMouseEvent<SVGRectElement>,
+  pointCount: number,
+) {
+  if (pointCount <= 1) return 0;
+  const bounds = event.currentTarget.getBoundingClientRect();
+  if (bounds.width <= 0) return 0;
+  const position = clamp((event.clientX - bounds.left) / bounds.width, 0, 1);
+  return Math.round(position * (pointCount - 1));
+}
+
+function formatBpInterval(seconds: number | null) {
+  if (seconds === null) return null;
+  if (seconds < 0) {
+    return `${Math.round(Math.abs(seconds))} seconds, with timestamps out of order`;
+  }
+  if (seconds < 120) return `${Math.round(seconds)} seconds`;
+  const minutes = seconds / 60;
+  return `${formatChartNumber(minutes)} minutes`;
+}
+
+function bpPairStatusLabel(session: BloodPressureSession) {
+  const assessment = assessBloodPressureSession(session);
+  if (assessment.pairStatus === "partial") {
+    return session.pairingClosedAt
+      ? "Single reading kept intentionally"
+      : "Single reading — provisional";
+  }
+  if (assessment.pairStatus === "complete-legacy") {
+    return "Legacy two-reading pair — interval not recorded";
+  }
+  if (assessment.pairStatus === "interval-too-short") {
+    return assessment.intervalSeconds !== null && assessment.intervalSeconds < 0
+      ? "Two readings — timestamps are out of order"
+      : "Two readings — less than 1 minute apart";
+  }
+  if (assessment.pairStatus === "interval-too-long") {
+    return "Two readings — more than 10 minutes apart";
+  }
+  return "Two readings — 1–10 minute interval";
+}
+
 function EmptyChart({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-48 items-center justify-center rounded-md border border-dashed border-zinc-200 bg-zinc-50 px-5 text-center text-sm text-zinc-500">
@@ -473,11 +604,63 @@ function EmptyChart({ children }: { children: ReactNode }) {
   );
 }
 
-function WeightChart({ entries }: { entries: WeightEntry[] }) {
+function WeightChart({
+  entries,
+  goalWeightKg,
+}: {
+  entries: WeightEntry[];
+  goalWeightKg: number;
+}) {
   const points = rollingWeightTrend(entries).slice(-90);
+  const titleId = useId();
+  const descriptionId = useId();
+  const detailId = useId();
+  const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
+  const [hoveredPointId, setHoveredPointId] = useState<string | null>(null);
+  const lastPreviewPointId = useRef<string | null>(null);
   if (points.length === 0) {
     return <EmptyChart>Add a weight to begin the trend chart.</EmptyChart>;
   }
+
+  const fallbackPoint = points.at(-1) ?? points[0];
+  const selectedPoint =
+    points.find((point) => point.id === selectedPointId) ?? fallbackPoint;
+  const activePoint =
+    points.find((point) => point.id === hoveredPointId) ?? selectedPoint;
+  const activeIndex = Math.max(
+    0,
+    points.findIndex((point) => point.id === activePoint.id),
+  );
+  const selectedIndex = Math.max(
+    0,
+    points.findIndex((point) => point.id === selectedPoint.id),
+  );
+
+  const pinPoint = (index: number) => {
+    const point = points[clamp(index, 0, points.length - 1)];
+    if (point) setSelectedPointId(point.id);
+  };
+
+  const previewNearestPoint = (event: ReactPointerEvent<SVGRectElement>) => {
+    if (event.pointerType === "touch") return;
+    const point = points[nearestSequentialPointIndex(event, points.length)];
+    if (point) {
+      lastPreviewPointId.current = point.id;
+      setHoveredPointId(point.id);
+    }
+  };
+
+  const selectNearestPoint = (event: ReactMouseEvent<SVGRectElement>) => {
+    pinPoint(nearestSequentialPointIndex(event, points.length));
+  };
+
+  const keepLastPreview = () => {
+    if (lastPreviewPointId.current) {
+      setSelectedPointId(lastPreviewPointId.current);
+    }
+    lastPreviewPointId.current = null;
+    setHoveredPointId(null);
+  };
 
   const width = 680;
   const height = 240;
@@ -519,12 +702,14 @@ function WeightChart({ entries }: { entries: WeightEntry[] }) {
         className="h-56 w-full"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-labelledby="weight-chart-title weight-chart-description"
+        aria-labelledby={`${titleId} ${descriptionId}`}
       >
-        <title id="weight-chart-title">Weight history and seven-day trend</title>
-        <desc id="weight-chart-description">
+        <title id={titleId}>Weight history and seven-day trend</title>
+        <desc id={descriptionId}>
           Raw weight measurements are shown with a smoothed seven-day rolling
-          average.
+          measurement-weighted average. Move across the plot or tap it to inspect the
+          nearest measurement in the details below. Horizontal spacing represents log
+          order, not equal elapsed time.
         </desc>
         {[0, 0.5, 1].map((fraction) => {
           const value = maximum - fraction * range;
@@ -552,14 +737,28 @@ function WeightChart({ entries }: { entries: WeightEntry[] }) {
           strokeWidth="2"
           strokeLinejoin="round"
         />
+        <line
+          x1={xForIndex(activeIndex)}
+          x2={xForIndex(activeIndex)}
+          y1={padding.top}
+          y2={height - padding.bottom}
+          stroke="#047857"
+          strokeDasharray="4 4"
+          strokeWidth="1.5"
+          aria-hidden="true"
+        />
         {points.map((point, index) => (
           <circle
-            key={`${point.measuredAt}-${index}`}
+            key={point.id}
             cx={xForIndex(index)}
             cy={yForValue(point.raw)}
-            r="3"
-            fill="#71717a"
-          />
+            r={point.id === activePoint.id ? 5 : 3}
+            fill={point.id === activePoint.id ? "#047857" : "#71717a"}
+            stroke="white"
+            strokeWidth={point.id === activePoint.id ? 2 : 0}
+          >
+            <title>{`${formatChartNumber(point.raw)} kg — ${formatChartDateTime(point.measuredAt)} Iran time`}</title>
+          </circle>
         ))}
         <path
           d={trendPath}
@@ -568,6 +767,19 @@ function WeightChart({ entries }: { entries: WeightEntry[] }) {
           strokeWidth="4"
           strokeLinecap="round"
           strokeLinejoin="round"
+        />
+        <rect
+          x={padding.left}
+          y={padding.top}
+          width={plotWidth}
+          height={plotHeight}
+          fill="transparent"
+          className="cursor-crosshair touch-pan-y"
+          onPointerEnter={previewNearestPoint}
+          onPointerMove={previewNearestPoint}
+          onPointerLeave={keepLastPreview}
+          onClick={selectNearestPoint}
+          aria-hidden="true"
         />
         <text x={padding.left} y={height - 8} fill="#71717a" fontSize="12">
           {formatShortDate(points[0].measuredAt)}
@@ -582,6 +794,91 @@ function WeightChart({ entries }: { entries: WeightEntry[] }) {
           {formatShortDate(points.at(-1)?.measuredAt ?? "")}
         </text>
       </svg>
+      <div className="flex items-center justify-between gap-2 border-t border-zinc-100 px-2 py-2">
+        <button
+          type="button"
+          className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-semibold text-zinc-700 disabled:opacity-40"
+          disabled={activeIndex === 0}
+          onClick={() => pinPoint(activeIndex - 1)}
+          aria-controls={detailId}
+          aria-label="Show previous weight measurement"
+        >
+          Previous
+        </button>
+        <p className="text-center text-xs text-zinc-500">
+          {activeIndex + 1} of {points.length} · hover or tap the plot
+        </p>
+        <button
+          type="button"
+          className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-semibold text-zinc-700 disabled:opacity-40"
+          disabled={activeIndex === points.length - 1}
+          onClick={() => pinPoint(activeIndex + 1)}
+          aria-controls={detailId}
+          aria-label="Show next weight measurement"
+        >
+          Next
+        </button>
+      </div>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        Selected weight measurement {selectedIndex + 1} of {points.length}:{" "}
+        {formatChartNumber(selectedPoint.raw)} kilograms, recorded{" "}
+        {formatChartDateTime(selectedPoint.measuredAt)} Iran time.
+      </p>
+      <div id={detailId} className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-950">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <p className="font-semibold">
+              {formatChartNumber(activePoint.raw)} kg
+            </p>
+            <p className="text-xs text-emerald-800">
+              {formatChartDateTime(activePoint.measuredAt)} Iran time · Care Day{" "}
+              {entryCareDayKey(activePoint.entry)}
+            </p>
+          </div>
+          <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-emerald-800">
+            {activePoint.raw === goalWeightKg
+              ? "At goal"
+              : `${formatChartNumber(Math.abs(activePoint.raw - goalWeightKg))} kg ${
+                  activePoint.raw > goalWeightKg ? "above" : "below"
+                } goal`}
+          </span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <div className="rounded-md bg-white p-2.5">
+            <p className="text-xs text-zinc-500">7-day rolling mean</p>
+            <p className="font-semibold text-zinc-900">
+              {formatChartNumber(activePoint.trend)} kg
+            </p>
+          </div>
+          <div className="rounded-md bg-white p-2.5">
+            <p className="text-xs text-zinc-500">Vs. rolling mean</p>
+            <p className="font-semibold text-zinc-900">
+              {activePoint.differenceFromTrend > 0 ? "+" : ""}
+              {formatChartNumber(activePoint.differenceFromTrend)} kg
+            </p>
+          </div>
+          <div className="col-span-2 rounded-md bg-white p-2.5 sm:col-span-1">
+            <p className="text-xs text-zinc-500">Vs. previous log</p>
+            <p className="font-semibold text-zinc-900">
+              {activePoint.differenceFromPrevious === null
+                ? "First log"
+                : `${activePoint.differenceFromPrevious > 0 ? "+" : ""}${formatChartNumber(
+                    activePoint.differenceFromPrevious,
+                  )} kg`}
+            </p>
+          </div>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-emerald-800">
+          Rolling mean uses {activePoint.trendMeasurementCount} logged measurement
+          {activePoint.trendMeasurementCount === 1 ? "" : "s"} from the preceding 7×24
+          hours; it is not a mean of seven daily averages.
+        </p>
+        {activePoint.entry.notes ? (
+          <p className="mt-2 break-words rounded-md border border-emerald-200 bg-white p-2.5 text-zinc-700">
+            <strong>Note:</strong> {activePoint.entry.notes}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -589,24 +886,91 @@ function WeightChart({ entries }: { entries: WeightEntry[] }) {
 function BloodPressureChart({
   sessions,
   targetSystolic,
+  targetDiastolic,
 }: {
   sessions: BloodPressureSession[];
   targetSystolic: number;
+  targetDiastolic: number;
 }) {
   const points = sortByMeasuredAt(sessions)
     .slice(-42)
-    .map((session) => ({
-      measuredAt: session.measuredAt,
-      ...sessionAverage(session),
-    }));
+    .map((session) => {
+      const average = sessionAverage(session);
+      const assessment = assessBloodPressureSession(session, {
+        targetSystolic,
+        targetDiastolic,
+      });
+      return {
+        id: session.id,
+        session,
+        measuredAt: session.measuredAt,
+        average,
+        assessment,
+        category: bpCategory(average.systolic, average.diastolic),
+        pulseRecordedCount: session.readings.filter(
+          (reading) => typeof reading?.pulseBpm === "number",
+        ).length,
+      };
+    });
+  const titleId = useId();
+  const descriptionId = useId();
+  const pulseTitleId = useId();
+  const pulseDescriptionId = useId();
+  const detailId = useId();
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
+  const lastPreviewSessionId = useRef<string | null>(null);
   if (points.length === 0) {
     return <EmptyChart>Add a session to begin the blood pressure chart.</EmptyChart>;
   }
 
+  const fallbackPoint = points.at(-1) ?? points[0];
+  const selectedPoint =
+    points.find((point) => point.id === selectedSessionId) ?? fallbackPoint;
+  const activePoint =
+    points.find((point) => point.id === hoveredSessionId) ?? selectedPoint;
+  const activeIndex = Math.max(
+    0,
+    points.findIndex((point) => point.id === activePoint.id),
+  );
+  const selectedIndex = Math.max(
+    0,
+    points.findIndex((point) => point.id === selectedPoint.id),
+  );
+
+  const pinPoint = (index: number) => {
+    const point = points[clamp(index, 0, points.length - 1)];
+    if (point) setSelectedSessionId(point.id);
+  };
+
+  const previewNearestPoint = (event: ReactPointerEvent<SVGRectElement>) => {
+    if (event.pointerType === "touch") return;
+    const point = points[nearestSequentialPointIndex(event, points.length)];
+    if (point) {
+      lastPreviewSessionId.current = point.id;
+      setHoveredSessionId(point.id);
+    }
+  };
+
+  const selectNearestPoint = (event: ReactMouseEvent<SVGRectElement>) => {
+    pinPoint(nearestSequentialPointIndex(event, points.length));
+  };
+
+  const keepLastPreview = () => {
+    if (lastPreviewSessionId.current) {
+      setSelectedSessionId(lastPreviewSessionId.current);
+    }
+    lastPreviewSessionId.current = null;
+    setHoveredSessionId(null);
+  };
+
   const width = 680;
   const height = 240;
   const padding = { left: 44, right: 18, top: 18, bottom: 34 };
-  const allValues = points.flatMap((point) => [point.systolic, point.diastolic]);
+  const allValues = points.flatMap((point) => [
+    point.average.systolic,
+    point.average.diastolic,
+  ]);
   const minimum = Math.max(20, Math.floor((Math.min(...allValues) - 10) / 10) * 10);
   const maximum = Math.max(
     150,
@@ -622,8 +986,15 @@ function BloodPressureChart({
   const yForValue = (value: number) =>
     padding.top + ((maximum - value) / range) * plotHeight;
   const pulsePoints = points.flatMap((point, pointIndex) =>
-    typeof point.pulseBpm === "number"
-      ? [{ measuredAt: point.measuredAt, pointIndex, pulseBpm: point.pulseBpm }]
+    typeof point.average.pulseBpm === "number"
+      ? [
+          {
+            id: point.id,
+            measuredAt: point.measuredAt,
+            pointIndex,
+            pulseBpm: point.average.pulseBpm,
+          },
+        ]
       : [],
   );
   const pulseValues = pulsePoints.map((point) => point.pulseBpm);
@@ -643,6 +1014,37 @@ function BloodPressureChart({
   const pulsePlotHeight = pulseHeight - padding.top - padding.bottom;
   const pulseYForValue = (value: number) =>
     padding.top + ((pulseMaximum - value) / pulseRange) * pulsePlotHeight;
+  const pulsePath = points
+    .map((point, index) => {
+      if (typeof point.average.pulseBpm !== "number") {
+        return "";
+      }
+      const previousPoint = points[index - 1];
+      const command =
+        previousPoint && typeof previousPoint.average.pulseBpm === "number"
+          ? "L"
+          : "M";
+      return `${command}${xForIndex(index).toFixed(2)},${pulseYForValue(
+        point.average.pulseBpm,
+      ).toFixed(2)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+  const activeAverage = activePoint.average;
+  const activeSession = activePoint.session;
+  const activeAssessment = activePoint.assessment;
+  const intervalLabel = formatBpInterval(activeAssessment.intervalSeconds);
+  const contextLabels = activeSession.contextFlags.map(
+    (flag) => BP_CONTEXT_LABELS[flag],
+  );
+  const symptomLabels = activeSession.symptoms.map(
+    (symptom) => BP_SYMPTOM_LABELS[symptom],
+  );
+  const emergencyLabels = activeSession.emergencySymptoms.map(
+    (symptom) =>
+      EMERGENCY_SYMPTOMS.find((candidate) => candidate.id === symptom)?.label ??
+      symptom,
+  );
 
   return (
     <div className="overflow-hidden rounded-md border border-zinc-200 bg-white p-2">
@@ -655,21 +1057,34 @@ function BloodPressureChart({
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="w-5 border-t-2 border-dashed border-orange-400" />
-          Configured systolic target: {targetSystolic}; reference: 140
+          Systolic threshold: {targetSystolic}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-5 border-t-2 border-dashed border-sky-400" />
+          Diastolic threshold: {targetDiastolic}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-3 w-3 rounded-full border-2 border-zinc-500 bg-white" />
+          Provisional or non-protocol point
         </span>
       </div>
+      <p className="px-2 text-xs leading-5 text-zinc-500">
+        Showing {points.length === 42 && sessions.length > 42 ? "the latest " : ""}
+        {points.length} sequential session{points.length === 1 ? "" : "s"}. Hover on
+        desktop or tap on mobile; exact Iran time is shown below.
+      </p>
       <svg
         className="h-56 w-full"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-labelledby="bp-chart-title bp-chart-description"
+        aria-labelledby={`${titleId} ${descriptionId}`}
       >
-        <title id="bp-chart-title">Blood pressure session averages</title>
-        <desc id="bp-chart-description">
+        <title id={titleId}>Blood pressure session averages</title>
+        <desc id={descriptionId}>
           Systolic and diastolic values from each session. Two-reading sessions use
           their average; a single-reading session remains a provisional point. Dashed
-          lines mark the configured systolic home target and a 140 millimeter of
-          mercury reference; they do not apply to the diastolic series.
+          lines mark the configured systolic and diastolic home thresholds. Horizontal
+          spacing represents session order, not equal elapsed time.
         </desc>
         {[minimum, minimum + range / 2, maximum].map((value) => {
           const y = yForValue(value);
@@ -688,22 +1103,25 @@ function BloodPressureChart({
             </g>
           );
         })}
-        {[...new Set([targetSystolic, 140])].map((threshold) =>
-          threshold >= minimum && threshold <= maximum ? (
+        {[
+          { value: targetSystolic, color: "#fb923c", key: "systolic-target" },
+          { value: targetDiastolic, color: "#38bdf8", key: "diastolic-target" },
+        ].map((threshold) =>
+          threshold.value >= minimum && threshold.value <= maximum ? (
             <line
-              key={threshold}
+              key={threshold.key}
               x1={padding.left}
               x2={width - padding.right}
-              y1={yForValue(threshold)}
-              y2={yForValue(threshold)}
-              stroke={threshold === 140 ? "#fda4af" : "#fdba74"}
+              y1={yForValue(threshold.value)}
+              y2={yForValue(threshold.value)}
+              stroke={threshold.color}
               strokeDasharray="5 5"
             />
           ) : null,
         )}
         <path
           d={linePath(
-            points.map((point) => point.systolic),
+            points.map((point) => point.average.systolic),
             xForIndex,
             yForValue,
           )}
@@ -715,7 +1133,7 @@ function BloodPressureChart({
         />
         <path
           d={linePath(
-            points.map((point) => point.diastolic),
+            points.map((point) => point.average.diastolic),
             xForIndex,
             yForValue,
           )}
@@ -725,22 +1143,57 @@ function BloodPressureChart({
           strokeLinecap="round"
           strokeLinejoin="round"
         />
+        <line
+          x1={xForIndex(activeIndex)}
+          x2={xForIndex(activeIndex)}
+          y1={padding.top}
+          y2={height - padding.bottom}
+          stroke="#52525b"
+          strokeDasharray="4 4"
+          strokeWidth="1.5"
+          aria-hidden="true"
+        />
         {points.map((point, index) => (
-          <g key={`${point.measuredAt}-${index}`}>
+          <g key={point.id}>
             <circle
               cx={xForIndex(index)}
-              cy={yForValue(point.systolic)}
-              r="3"
-              fill="#be123c"
-            />
+              cy={yForValue(point.average.systolic)}
+              r={point.id === activePoint.id ? 5 : 3.5}
+              fill={point.assessment.trendEligible ? "#be123c" : "white"}
+              stroke="#be123c"
+              strokeWidth={point.assessment.trendEligible ? 1 : 2}
+            >
+              <title>{`${formatChartNumber(point.average.systolic)}/${formatChartNumber(
+                point.average.diastolic,
+              )} average — ${formatChartDateTime(point.measuredAt)} Iran time`}</title>
+            </circle>
             <circle
               cx={xForIndex(index)}
-              cy={yForValue(point.diastolic)}
-              r="3"
-              fill="#0369a1"
-            />
+              cy={yForValue(point.average.diastolic)}
+              r={point.id === activePoint.id ? 5 : 3.5}
+              fill={point.assessment.trendEligible ? "#0369a1" : "white"}
+              stroke="#0369a1"
+              strokeWidth={point.assessment.trendEligible ? 1 : 2}
+            >
+              <title>{`${formatChartNumber(point.average.systolic)}/${formatChartNumber(
+                point.average.diastolic,
+              )} average — ${formatChartDateTime(point.measuredAt)} Iran time`}</title>
+            </circle>
           </g>
         ))}
+        <rect
+          x={padding.left}
+          y={padding.top}
+          width={plotWidth}
+          height={plotHeight}
+          fill="transparent"
+          className="cursor-crosshair touch-pan-y"
+          onPointerEnter={previewNearestPoint}
+          onPointerMove={previewNearestPoint}
+          onPointerLeave={keepLastPreview}
+          onClick={selectNearestPoint}
+          aria-hidden="true"
+        />
         <text x={padding.left} y={height - 8} fill="#71717a" fontSize="12">
           {formatShortDate(points[0].measuredAt)}
         </text>
@@ -754,6 +1207,33 @@ function BloodPressureChart({
           {formatShortDate(points.at(-1)?.measuredAt ?? "")}
         </text>
       </svg>
+      <div className="mx-2 mb-2 grid gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm sm:grid-cols-[1fr_auto]">
+        <div>
+          <p className="font-semibold text-zinc-950">
+            {formatChartNumber(activeAverage.systolic)}/
+            {formatChartNumber(activeAverage.diastolic)} average ·{" "}
+            {activeAverage.pulseBpm === null
+              ? "pulse not recorded"
+              : `${formatChartNumber(activeAverage.pulseBpm)} bpm pulse`}
+          </p>
+          <p className="mt-0.5 text-xs leading-5 text-zinc-500">
+            {formatChartDateTime(activeSession.measuredAt)} Iran time · Care Day{" "}
+            {entryCareDayKey(activeSession)}
+          </p>
+        </div>
+        <p className="text-xs leading-5 text-zinc-600 sm:text-right">
+          {activeSession.readings
+            .map(
+              (reading, index) =>
+                `R${index + 1} ${reading.systolic}/${reading.diastolic}${
+                  typeof reading.pulseBpm === "number"
+                    ? ` · ${reading.pulseBpm} bpm`
+                    : " · pulse —"
+                }`,
+            )
+            .join("  |  ")}
+        </p>
+      </div>
       {pulsePoints.length > 0 ? (
         <div className="mt-2 border-t border-zinc-100 pt-2">
           <div className="px-2 text-xs font-medium text-zinc-600">
@@ -766,12 +1246,14 @@ function BloodPressureChart({
             className="h-36 w-full"
             viewBox={`0 0 ${width} ${pulseHeight}`}
             role="img"
-            aria-labelledby="pulse-chart-title pulse-chart-description"
+            aria-labelledby={`${pulseTitleId} ${pulseDescriptionId}`}
           >
-            <title id="pulse-chart-title">Pulse averages by blood pressure session</title>
-            <desc id="pulse-chart-description">
+            <title id={pulseTitleId}>Pulse averages by blood pressure session</title>
+            <desc id={pulseDescriptionId}>
               Average pulse in beats per minute for each blood pressure session that
-              includes pulse. Legacy sessions without pulse are omitted.
+              includes pulse. Legacy sessions without pulse remain gaps. Pulse is the
+              device reading during blood pressure measurement, not necessarily a
+              resting heart rate.
             </desc>
             {[pulseMinimum, pulseMinimum + pulseRange / 2, pulseMaximum].map(
               (value) => {
@@ -793,28 +1275,51 @@ function BloodPressureChart({
               },
             )}
             <path
-              d={linePath(
-                pulseValues,
-                (index) => xForIndex(pulsePoints[index].pointIndex),
-                pulseYForValue,
-              )}
+              d={pulsePath}
               fill="none"
               stroke="#7c3aed"
               strokeWidth="3"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
+            <line
+              x1={xForIndex(activeIndex)}
+              x2={xForIndex(activeIndex)}
+              y1={padding.top}
+              y2={pulseHeight - padding.bottom}
+              stroke="#52525b"
+              strokeDasharray="4 4"
+              strokeWidth="1.5"
+              aria-hidden="true"
+            />
             {pulsePoints.map((point) => (
               <circle
-                key={`${point.measuredAt}-${point.pointIndex}`}
+                key={point.id}
                 cx={xForIndex(point.pointIndex)}
                 cy={pulseYForValue(point.pulseBpm)}
-                r="3"
+                r={point.id === activePoint.id ? 5 : 3.5}
                 fill="#6d28d9"
+                stroke="white"
+                strokeWidth={point.id === activePoint.id ? 2 : 0}
               >
-                <title>{`${Math.round(point.pulseBpm)} bpm — ${formatShortDate(point.measuredAt)}`}</title>
+                <title>{`${formatChartNumber(point.pulseBpm)} bpm — ${formatChartDateTime(
+                  point.measuredAt,
+                )} Iran time`}</title>
               </circle>
             ))}
+            <rect
+              x={padding.left}
+              y={padding.top}
+              width={plotWidth}
+              height={pulsePlotHeight}
+              fill="transparent"
+              className="cursor-crosshair touch-pan-y"
+              onPointerEnter={previewNearestPoint}
+              onPointerMove={previewNearestPoint}
+              onPointerLeave={keepLastPreview}
+              onClick={selectNearestPoint}
+              aria-hidden="true"
+            />
             <text x={padding.left} y={pulseHeight - 8} fill="#71717a" fontSize="12">
               {formatShortDate(points[0].measuredAt)}
             </text>
@@ -835,6 +1340,162 @@ function BloodPressureChart({
           pressure records remain unchanged.
         </p>
       )}
+      <div className="flex items-center justify-between gap-2 border-t border-zinc-100 px-2 py-2">
+        <button
+          type="button"
+          className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-semibold text-zinc-700 disabled:opacity-40"
+          disabled={activeIndex === 0}
+          onClick={() => pinPoint(activeIndex - 1)}
+          aria-controls={detailId}
+          aria-label="Show previous blood-pressure session"
+        >
+          Previous
+        </button>
+        <p className="text-center text-xs text-zinc-500">
+          Session {activeIndex + 1} of {points.length}
+        </p>
+        <button
+          type="button"
+          className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-semibold text-zinc-700 disabled:opacity-40"
+          disabled={activeIndex === points.length - 1}
+          onClick={() => pinPoint(activeIndex + 1)}
+          aria-controls={detailId}
+          aria-label="Show next blood-pressure session"
+        >
+          Next
+        </button>
+      </div>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        Selected blood-pressure session {selectedIndex + 1} of {points.length}:{" "}
+        {formatChartNumber(selectedPoint.average.systolic)} over{" "}
+        {formatChartNumber(selectedPoint.average.diastolic)} millimeters of mercury,
+        {selectedPoint.average.pulseBpm === null
+          ? " pulse not recorded,"
+          : ` pulse ${formatChartNumber(selectedPoint.average.pulseBpm)} beats per minute,`}{" "}
+        recorded {formatChartDateTime(selectedPoint.measuredAt)} Iran time.
+      </p>
+      <section
+        id={detailId}
+        className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-800"
+        aria-label="Selected blood pressure session details"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <p className="text-lg font-semibold text-zinc-950">
+              {formatChartNumber(activeAverage.systolic)}/
+              {formatChartNumber(activeAverage.diastolic)} mm Hg average
+            </p>
+            <p className="text-xs leading-5 text-zinc-500">
+              {formatChartDateTime(activeSession.measuredAt)} Iran time · Care Day{" "}
+              {entryCareDayKey(activeSession)} · {BP_PERIOD_LABELS[activeSession.period]}
+            </p>
+          </div>
+          <span
+            className={`inline-flex rounded-md border px-2.5 py-1 text-xs font-semibold ${categoryClass(
+              activePoint.category,
+            )}`}
+          >
+            {categoryLabel(activePoint.category)} · not a diagnosis
+          </span>
+        </div>
+
+        {activeAssessment.rawSevere ? (
+          <div className="mt-3 rounded-md border border-red-300 bg-red-100 p-2.5 text-sm font-semibold text-red-950">
+            At least one raw reading reached the app&apos;s severe-value threshold, even
+            if the session average is lower. Review the raw values and recorded
+            symptoms below.
+          </div>
+        ) : null}
+
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-md bg-white p-2.5">
+            <p className="text-xs text-zinc-500">Pulse during BP check</p>
+            <p className="font-semibold text-zinc-950">
+              {activeAverage.pulseBpm === null
+                ? "Not recorded"
+                : `${formatChartNumber(activeAverage.pulseBpm)} bpm`}
+            </p>
+            <p className="text-xs text-zinc-500">
+              {activePoint.pulseRecordedCount} of {activeSession.readings.length} reading
+              {activeSession.readings.length === 1 ? "" : "s"}
+            </p>
+          </div>
+          <div className="rounded-md bg-white p-2.5">
+            <p className="text-xs text-zinc-500">Configured threshold</p>
+            <p className="font-semibold text-zinc-950">
+              {targetSystolic}/{targetDiastolic} mm Hg
+            </p>
+          </div>
+          <div className="col-span-2 rounded-md bg-white p-2.5">
+            <p className="text-xs text-zinc-500">Session quality</p>
+            <p className="font-semibold text-zinc-950">
+              {bpPairStatusLabel(activeSession)}
+            </p>
+            <p className="text-xs text-zinc-500">
+              {intervalLabel ? `Recorded interval: ${intervalLabel}. ` : ""}
+              {activeAssessment.trendEligible
+                ? "Included in protocol trend."
+                : "Shown on this history chart but excluded from protocol trend."}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {activeSession.readings.map((reading, index) => (
+            <div key={index} className="rounded-md border border-zinc-200 bg-white p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Reading {index + 1}
+              </p>
+              <p className="mt-1 text-lg font-semibold text-zinc-950">
+                {reading.systolic}/{reading.diastolic} mm Hg
+              </p>
+              <p className="text-sm text-zinc-700">
+                Pulse: {typeof reading.pulseBpm === "number" ? `${reading.pulseBpm} bpm` : "not recorded"}
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                {reading.measuredAt
+                  ? `${formatChartDateTime(reading.measuredAt)} Iran time`
+                  : "Individual reading time not recorded (legacy data)"}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <details className="mt-3 rounded-md border border-zinc-200 bg-white">
+          <summary className="flex min-h-11 cursor-pointer items-center px-3 py-2 font-semibold text-zinc-800">
+            Measurement conditions, symptoms and note
+          </summary>
+          <div className="border-t border-zinc-100 p-3">
+            <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
+              <div><dt className="text-xs text-zinc-500">Arm</dt><dd className="font-medium">{BP_ARM_LABELS[activeSession.arm]}</dd></div>
+              <div><dt className="text-xs text-zinc-500">Position</dt><dd className="font-medium">{BP_POSITION_LABELS[activeSession.position]}</dd></div>
+              <div><dt className="text-xs text-zinc-500">Cuff</dt><dd className="font-medium">{BP_CUFF_SITE_LABELS[activeSession.cuffSite]}</dd></div>
+              <div><dt className="text-xs text-zinc-500">Medicine timing</dt><dd className="font-medium">{BP_MEDICATION_TIMING_LABELS[activeSession.medicationTiming]}</dd></div>
+              <div><dt className="text-xs text-zinc-500">Standard setup</dt><dd className="font-medium">{activeSession.standardConditions === null ? "Not recorded" : activeSession.standardConditions ? "Marked as followed" : "Not marked as followed"}</dd></div>
+              <div><dt className="text-xs text-zinc-500">Triggered by symptoms</dt><dd className="font-medium">{activeSession.triggeredBySymptoms ? "Yes" : "No"}</dd></div>
+              <div><dt className="text-xs text-zinc-500">Device irregular-heartbeat flag</dt><dd className="font-medium">{activeSession.irregularHeartbeat === null ? "Not recorded" : activeSession.irregularHeartbeat ? "Flag shown by device — not a diagnosis" : "No flag recorded"}</dd></div>
+            </dl>
+            {contextLabels.length > 0 ? (
+              <p className="mt-3"><strong>Recorded context:</strong> {contextLabels.join(", ")}</p>
+            ) : null}
+            {symptomLabels.length > 0 ? (
+              <p className="mt-2"><strong>Symptoms:</strong> {symptomLabels.join(", ")}</p>
+            ) : null}
+            {emergencyLabels.length > 0 ? (
+              <p className="mt-2 text-red-900"><strong>Emergency symptoms recorded:</strong> {emergencyLabels.join(", ")}</p>
+            ) : null}
+            {activeSession.notes ? (
+              <p className="mt-2 break-words"><strong>Note:</strong> {activeSession.notes}</p>
+            ) : null}
+            {contextLabels.length === 0 &&
+            symptomLabels.length === 0 &&
+            emergencyLabels.length === 0 &&
+            !activeSession.notes ? (
+              <p className="mt-3 text-zinc-500">No context flags, symptom selections, or note were recorded.</p>
+            ) : null}
+          </div>
+        </details>
+      </section>
     </div>
   );
 }
@@ -3225,7 +3886,10 @@ export function HealthTracker({
         </div>
 
         <div className="mt-4">
-          <WeightChart entries={sortedWeights} />
+          <WeightChart
+            entries={sortedWeights}
+            goalWeightKg={settings.goalWeightKg}
+          />
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -3413,6 +4077,7 @@ export function HealthTracker({
           <BloodPressureChart
             sessions={sortedBp}
             targetSystolic={settings.bpTargetSystolic}
+            targetDiastolic={settings.bpTargetDiastolic}
           />
         </div>
         <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-zinc-500">
