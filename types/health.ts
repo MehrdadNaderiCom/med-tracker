@@ -30,6 +30,12 @@ export type BloodPressureMedicationTiming =
   | "after-dose"
   | "unknown";
 export type BloodPressureContextFlag =
+  | "emotional-stress"
+  | "relationship-conflict"
+  | "acute-pain"
+  | "acute-illness"
+  | "poor-sleep"
+  | "rushed"
   | "caffeine"
   | "nicotine"
   | "exercise"
@@ -38,6 +44,8 @@ export type BloodPressureContextFlag =
   | "full-bladder"
   | "talking"
   | "not-rested"
+  | "positioning-issue"
+  | "cuff-issue"
   | "other";
 export type BloodPressureSymptom =
   | "dizziness"

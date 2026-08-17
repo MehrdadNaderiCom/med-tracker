@@ -121,16 +121,76 @@ const BP_MEDICATION_TIMING_LABELS: Record<BloodPressureMedicationTiming, string>
 };
 
 const BP_CONTEXT_LABELS: Record<BloodPressureContextFlag, string> = {
+  "emotional-stress": "Acute emotional stress or anxiety",
+  "relationship-conflict": "After an argument or relationship conflict",
+  "acute-pain": "Pain during measurement",
+  "acute-illness": "Acute illness or fever",
+  "poor-sleep": "Poor or insufficient sleep the night before",
+  rushed: "Rushed shortly before settling for the measurement",
   caffeine: "Caffeine within 30 minutes",
   nicotine: "Nicotine or hookah within 30 minutes",
   exercise: "Exercise within 30 minutes",
   alcohol: "Alcohol within 30 minutes",
   meal: "Recent meal",
   "full-bladder": "Full bladder",
-  talking: "Talking during measurement",
+  talking: "Talking or phone use during rest or measurement",
   "not-rested": "Did not rest for 5 minutes",
+  "positioning-issue": "Feet, back, or arm not correctly supported",
+  "cuff-issue": "Cuff fit, placement, or clothing concern",
   other: "Other non-standard condition",
 };
+
+const BP_STANDARD_SETUP_EXCEPTION_FLAGS = new Set<BloodPressureContextFlag>([
+  "caffeine",
+  "nicotine",
+  "exercise",
+  "alcohol",
+  "meal",
+  "full-bladder",
+  "talking",
+  "not-rested",
+  "positioning-issue",
+  "cuff-issue",
+  "other",
+]);
+
+const BP_CONTEXT_GROUPS = [
+  {
+    label: "Emotional / physical context",
+    options: [
+      ["emotional-stress", "Stress / anxiety"],
+      ["relationship-conflict", "Argument / relationship conflict"],
+      ["acute-pain", "Pain"],
+      ["acute-illness", "Illness / fever"],
+      ["rushed", "Rushed shortly beforehand"],
+      ["poor-sleep", "Poor sleep"],
+    ],
+  },
+  {
+    label: "Within 30 minutes",
+    options: [
+      ["caffeine", "Caffeine"],
+      ["nicotine", "Hookah / nicotine"],
+      ["exercise", "Exercise"],
+      ["alcohol", "Alcohol"],
+      ["meal", "Meal"],
+    ],
+  },
+  {
+    label: "Measurement setup exceptions",
+    options: [
+      ["full-bladder", "Full bladder"],
+      ["talking", "Talking / phone use"],
+      ["not-rested", "No 5-min rest"],
+      ["positioning-issue", "Feet / back / arm position"],
+      ["cuff-issue", "Cuff concern"],
+      ["other", "Other"],
+    ],
+  },
+] as const satisfies ReadonlyArray<{
+  label: string;
+  options: ReadonlyArray<readonly [BloodPressureContextFlag, string]>;
+}>;
 
 const BP_SYMPTOM_LABELS: Record<BloodPressureSymptom, string> = {
   dizziness: "Dizziness",
@@ -1906,7 +1966,9 @@ function BloodPressureForm({
   }
 
   function toggleContext(flag: BloodPressureContextFlag) {
-    setStandardConditions(false);
+    if (BP_STANDARD_SETUP_EXCEPTION_FLAGS.has(flag)) {
+      setStandardConditions(false);
+    }
     setContextFlags((current) =>
       current.includes(flag)
         ? current.filter((item) => item !== flag)
@@ -2325,10 +2387,17 @@ function BloodPressureForm({
               checked={standardConditions === true}
               onChange={(event) => {
                 setStandardConditions(event.target.checked);
-                if (event.target.checked) setContextFlags([]);
+                if (event.target.checked) {
+                  setContextFlags((current) =>
+                    current.filter(
+                      (flag) => !BP_STANDARD_SETUP_EXCEPTION_FLAGS.has(flag),
+                    ),
+                  );
+                }
               }}
             />
-            Standard setup followed (5-min rest, bare arm, supported, quiet)
+            Full standard protocol followed (pre-check preparation, empty bladder,
+            5-min rest, bare arm, supported, quiet)
           </label>
           <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm">
             <input
@@ -2347,35 +2416,30 @@ function BloodPressureForm({
             Device showed irregular heartbeat
           </label>
         </div>
-        <p className="mt-3 text-xs font-semibold text-zinc-600">
-          Within 30 minutes / setup exception
+        {BP_CONTEXT_GROUPS.map((group) => (
+          <div key={group.label} className="mt-3">
+            <p className="text-xs font-semibold text-zinc-600">{group.label}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {group.options.map(([id, label]) => (
+                <label
+                  key={id}
+                  className="flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs"
+                >
+                  <input
+                    type="checkbox"
+                    checked={contextFlags.includes(id)}
+                    onChange={() => toggleContext(id)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+        <p className="mt-2 text-xs leading-5 text-zinc-500">
+          Emotional and physical context can coexist with a correctly performed
+          measurement. Chest pain still belongs in the emergency symptoms above.
         </p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {(
-            [
-              ["caffeine", "Caffeine"],
-              ["nicotine", "Hookah / nicotine"],
-              ["exercise", "Exercise"],
-              ["alcohol", "Alcohol"],
-              ["meal", "Recent meal"],
-              ["full-bladder", "Full bladder"],
-              ["talking", "Talking"],
-              ["not-rested", "No 5-min rest"],
-            ] as const
-          ).map(([id, label]) => (
-            <label
-              key={id}
-              className="flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs"
-            >
-              <input
-                type="checkbox"
-                checked={contextFlags.includes(id)}
-                onChange={() => toggleContext(id)}
-              />
-              {label}
-            </label>
-          ))}
-        </div>
         <p className="mt-3 text-xs font-semibold text-zinc-600">Non-emergency symptoms</p>
         <div className="mt-2 flex flex-wrap gap-2">
           {(
@@ -2410,7 +2474,7 @@ function BloodPressureForm({
           maxLength={300}
           value={notes}
           onChange={(event) => setNotes(event.target.value)}
-          placeholder="Symptoms, caffeine, exercise, missed rest, or cuff concern"
+          placeholder="Stress, conflict, pain, illness, sleep, medication, or other detail"
         />
       </label>
     </form>
@@ -4132,6 +4196,19 @@ export function HealthTracker({
                             <p className="mt-1 text-xs text-zinc-500">
                               {formatDateTime(session.measuredAt)} · {session.period}
                             </p>
+                            {session.contextFlags.length > 0 ? (
+                              <p className="mt-1 text-xs leading-5 text-zinc-600">
+                                <span className="font-semibold">Context:</span>{" "}
+                                {session.contextFlags
+                                  .map((flag) => BP_CONTEXT_LABELS[flag])
+                                  .join(", ")}
+                              </p>
+                            ) : null}
+                            {session.notes ? (
+                              <p className="mt-1 text-xs leading-5 text-zinc-600">
+                                {session.notes}
+                              </p>
+                            ) : null}
                             <span
                               className={`mt-1.5 inline-flex rounded border px-1.5 py-0.5 text-[11px] font-semibold ${categoryClass(category)}`}
                             >

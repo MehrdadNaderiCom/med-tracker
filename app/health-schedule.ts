@@ -37,6 +37,7 @@ export interface ScheduleBloodPressureSession extends CareDayRecord {
   cuffSite?: "upper-arm" | "wrist" | "other" | "unknown" | string;
   standardConditions?: boolean | null;
   contextFlags?: readonly string[];
+  triggeredBySymptoms?: boolean;
   readings?: readonly ScheduleBloodPressureReading[];
 }
 
@@ -462,7 +463,12 @@ export function assessBloodPressureSession(
     }
   }
 
-  const techniqueExceptionFlags = new Set([
+  const nonRoutineContextFlags = new Set([
+    "emotional-stress",
+    "relationship-conflict",
+    "acute-pain",
+    "acute-illness",
+    "rushed",
     "caffeine",
     "nicotine",
     "exercise",
@@ -471,6 +477,9 @@ export function assessBloodPressureSession(
     "full-bladder",
     "talking",
     "not-rested",
+    "positioning-issue",
+    "cuff-issue",
+    "other",
   ]);
   const explicitlyNonRoutine =
     (session.position !== undefined &&
@@ -479,8 +488,9 @@ export function assessBloodPressureSession(
     (session.cuffSite !== undefined &&
       session.cuffSite !== "unknown" &&
       session.cuffSite !== "upper-arm") ||
+    session.triggeredBySymptoms === true ||
     session.standardConditions === false ||
-    (session.contextFlags ?? []).some((flag) => techniqueExceptionFlags.has(flag));
+    (session.contextFlags ?? []).some((flag) => nonRoutineContextFlags.has(flag));
   const trendEligible =
     (pairStatus === "complete" || pairStatus === "complete-legacy") &&
     !explicitlyNonRoutine;

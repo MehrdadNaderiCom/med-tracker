@@ -128,6 +128,41 @@ test("legacy two-reading BP sessions retain values and receive neutral context d
   assert.equal(session.irregularHeartbeat, null);
 });
 
+test("supported emotional, physical, and setup BP contexts survive normalization", () => {
+  const contextFlags = [
+    "emotional-stress",
+    "relationship-conflict",
+    "acute-pain",
+    "acute-illness",
+    "poor-sleep",
+    "rushed",
+    "positioning-issue",
+    "cuff-issue",
+    "other",
+  ];
+  const session = {
+    id: "bp-context-normalization",
+    measuredAt: "2026-08-17T15:13:00.000Z",
+    period: "other",
+    readings: [
+      { systolic: 130, diastolic: 80, pulseBpm: 70 },
+      { systolic: 129, diastolic: 77, pulseBpm: 73 },
+    ],
+    contextFlags: [...contextFlags, "relationship-conflict", "unsupported-value"],
+    emergencySymptoms: [],
+    createdAt: "2026-08-17T15:23:44.631Z",
+    updatedAt: "2026-08-17T15:26:01.526Z",
+  };
+  const normalized = normalizeHealthData(
+    legacyV3({ bloodPressureSessions: [session] }),
+  );
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalized.bloodPressureSessions[0].contextFlags)),
+    contextFlags,
+  );
+});
+
 test("new BP readings require pulse while legacy pulse-less readings remain valid", () => {
   assert.equal(
     normalizeNewBloodPressureReading({ systolic: 124, diastolic: 76 }),

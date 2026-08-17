@@ -94,6 +94,12 @@ const EMERGENCY_SYMPTOMS = new Set<BloodPressureEmergencySymptom>([
 ]);
 
 const BP_CONTEXT_FLAGS = new Set<BloodPressureContextFlag>([
+  "emotional-stress",
+  "relationship-conflict",
+  "acute-pain",
+  "acute-illness",
+  "poor-sleep",
+  "rushed",
   "caffeine",
   "nicotine",
   "exercise",
@@ -102,6 +108,8 @@ const BP_CONTEXT_FLAGS = new Set<BloodPressureContextFlag>([
   "full-bladder",
   "talking",
   "not-rested",
+  "positioning-issue",
+  "cuff-issue",
   "other",
 ]);
 

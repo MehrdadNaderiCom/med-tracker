@@ -189,7 +189,46 @@ test("a timed pair is eligible through 600 seconds but not at 601 seconds", () =
   assert.equal(beyondBoundary.trendEligible, false);
 });
 
-test("an explicit measurement-context exception excludes a pair from protocol trends", () => {
+test("non-routine BP contexts exclude an otherwise valid pair from protocol trends", () => {
+  const nonRoutineFlags = [
+    "emotional-stress",
+    "relationship-conflict",
+    "acute-pain",
+    "acute-illness",
+    "rushed",
+    "caffeine",
+    "nicotine",
+    "exercise",
+    "alcohol",
+    "meal",
+    "full-bladder",
+    "talking",
+    "not-rested",
+    "positioning-issue",
+    "cuff-issue",
+    "other",
+  ];
+
+  for (const flag of nonRoutineFlags) {
+    const assessed = assessBloodPressureSession({
+      ...session({
+        readings: [
+          reading(181, 88, "2026-08-14T08:40:00.000Z"),
+          reading(136, 86, "2026-08-14T08:41:00.000Z"),
+        ],
+      }),
+      standardConditions: true,
+      contextFlags: [flag],
+    });
+
+    assert.equal(assessed.pairStatus, "complete", flag);
+    assert.equal(assessed.trendEligible, false, flag);
+    assert.equal(assessed.highPair, false, flag);
+    assert.equal(assessed.rawSevere, true, flag);
+  }
+});
+
+test("poor sleep remains interpretive context rather than a technique failure", () => {
   const assessed = assessBloodPressureSession({
     ...session({
       readings: [
@@ -197,7 +236,26 @@ test("an explicit measurement-context exception excludes a pair from protocol tr
         reading(136, 86, "2026-08-14T08:41:00.000Z"),
       ],
     }),
-    contextFlags: ["not-rested"],
+    standardConditions: true,
+    contextFlags: ["poor-sleep"],
+  });
+
+  assert.equal(assessed.pairStatus, "complete");
+  assert.equal(assessed.trendEligible, true);
+  assert.equal(assessed.highPair, true);
+});
+
+test("a symptom-triggered pair remains visible but stays out of routine trends", () => {
+  const assessed = assessBloodPressureSession({
+    ...session({
+      readings: [
+        reading(138, 88, "2026-08-14T08:40:00.000Z"),
+        reading(136, 86, "2026-08-14T08:41:00.000Z"),
+      ],
+    }),
+    standardConditions: true,
+    contextFlags: [],
+    triggeredBySymptoms: true,
   });
 
   assert.equal(assessed.pairStatus, "complete");
