@@ -34,6 +34,8 @@ const {
   mergeHealthData,
   normalizeHealthData,
   normalizeNewBloodPressureReading,
+  getExerciseSessionTehranDateKey,
+  getTrailingTehranDateKeys,
   summarizeExerciseSessions,
 } = healthDataModule.exports;
 
@@ -294,6 +296,7 @@ test("structured exercise sessions retain useful normalized detail", () => {
       exerciseSession({
         id: "strength-session-1",
         activityType: "strength-training",
+        careDayKey: undefined,
         durationMinutes: 25,
         intensity: "light",
         strengthExercises: [
@@ -339,6 +342,7 @@ test("structured exercise sessions retain useful normalized detail", () => {
   assert.equal(bike.symptoms, "none beyond expected exertion");
   assert.equal(bike.notes, "steady cadence");
   assert.ok(strength);
+  assert.equal(strength.careDayKey, undefined);
   assert.deepEqual(
     JSON.parse(JSON.stringify(strength.strengthExercises)),
     [
@@ -390,67 +394,218 @@ test("invalid exercise cores are rejected and invalid optional metrics stay unkn
   assert.equal(session.averageCadenceRpm, undefined);
 });
 
-test("exercise summaries use aerobic equivalence and distinct Tehran calendar dates", () => {
+test("exercise dates follow Tehran midnight rather than the medication Care Day", () => {
+  assert.equal(
+    getExerciseSessionTehranDateKey({
+      endedAt: "2026-08-16T20:29:59.999Z",
+    }),
+    "2026-08-16",
+  );
+  assert.equal(
+    getExerciseSessionTehranDateKey({ endedAt: "2026-08-16T20:30:00.000Z" }),
+    "2026-08-17",
+  );
+  assert.equal(
+    getExerciseSessionTehranDateKey({ endedAt: "2026-08-17T08:29:00.000Z" }),
+    "2026-08-17",
+  );
+  assert.equal(
+    getExerciseSessionTehranDateKey({ endedAt: "2026-08-17T08:30:00.000Z" }),
+    "2026-08-17",
+  );
+
+  const morningSession = exerciseSession({
+    endedAt: "2026-08-17T05:00:00.000Z",
+    careDayKey: "2026-08-16",
+  });
+  assert.equal(
+    summarizeExerciseSessions([morningSession], ["2026-08-17"]).sessions.length,
+    1,
+  );
+  assert.equal(
+    summarizeExerciseSessions([morningSession], ["2026-08-16"]).sessions.length,
+    0,
+  );
+});
+
+test("trailing Tehran date ranges are inclusive and calendar-safe", () => {
+  assert.deepEqual(
+    Array.from(getTrailingTehranDateKeys("2026-08-17", 1)),
+    ["2026-08-17"],
+  );
+  assert.deepEqual(
+    Array.from(getTrailingTehranDateKeys("2026-08-17", 7)),
+    [
+      "2026-08-11",
+      "2026-08-12",
+      "2026-08-13",
+      "2026-08-14",
+      "2026-08-15",
+      "2026-08-16",
+      "2026-08-17",
+    ],
+  );
+  const thirtyDays = Array.from(
+    getTrailingTehranDateKeys("2026-08-17", 30),
+  );
+  assert.equal(thirtyDays.length, 30);
+  assert.equal(thirtyDays[0], "2026-07-19");
+  assert.equal(thirtyDays.at(-1), "2026-08-17");
+  assert.deepEqual(
+    Array.from(getTrailingTehranDateKeys("2028-03-01", 3)),
+    ["2028-02-28", "2028-02-29", "2028-03-01"],
+  );
+  assert.deepEqual(
+    Array.from(getTrailingTehranDateKeys("2026-01-01", 2)),
+    ["2025-12-31", "2026-01-01"],
+  );
+  assert.deepEqual(
+    Array.from(getTrailingTehranDateKeys("2026-02-31", 7)),
+    [],
+  );
+  assert.deepEqual(
+    Array.from(getTrailingTehranDateKeys("2026-08-17", 0)),
+    [],
+  );
+});
+
+test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => {
   const sessions = [
     exerciseSession({
       id: "walk-moderate",
       activityType: "walking",
       durationMinutes: 30,
       intensity: "moderate",
+      endedAt: "2026-08-17T05:00:00.000Z",
       careDayKey: "2026-08-16",
     }),
     exerciseSession({
       id: "bike-vigorous",
       durationMinutes: 20,
       intensity: "vigorous",
-      careDayKey: "2026-08-16",
+      endedAt: "2026-08-17T10:00:00.000Z",
+      careDayKey: "2099-01-01",
     }),
     exerciseSession({
-      id: "bike-unknown",
-      durationMinutes: 10,
-      intensity: "unknown",
-      careDayKey: "2026-08-16",
-    }),
-    exerciseSession({
-      id: "mobility-vigorous",
-      activityType: "mobility",
+      id: "strength-aug-16",
+      activityType: "strength-training",
       durationMinutes: 15,
-      intensity: "vigorous",
-      careDayKey: "2026-08-16",
+      endedAt: "2026-08-16T12:00:00.000Z",
     }),
     exerciseSession({
-      id: "strength-before-noon",
+      id: "strength-aug-11",
       activityType: "strength-training",
       durationMinutes: 10,
       intensity: "light",
-      endedAt: "2026-08-17T05:00:00.000Z",
-      careDayKey: "2026-08-16",
+      endedAt: "2026-08-11T12:00:00.000Z",
     }),
     exerciseSession({
-      id: "strength-after-noon",
+      id: "strength-aug-10",
       activityType: "strength-training",
-      durationMinutes: 10,
+      durationMinutes: 5,
       intensity: "moderate",
-      endedAt: "2026-08-17T10:00:00.000Z",
-      careDayKey: "2026-08-17",
+      endedAt: "2026-08-10T12:00:00.000Z",
     }),
     exerciseSession({
-      id: "outside-period",
-      durationMinutes: 500,
-      careDayKey: "2026-08-10",
+      id: "strength-jul-19",
+      activityType: "strength-training",
+      durationMinutes: 25,
+      endedAt: "2026-07-19T12:00:00.000Z",
+    }),
+    exerciseSession({
+      id: "other-aerobic-jul-18",
+      activityType: "other-aerobic",
+      durationMinutes: 40,
+      intensity: "moderate",
+      endedAt: "2026-07-18T12:00:00.000Z",
+    }),
+    exerciseSession({
+      id: "older-mobility",
+      activityType: "mobility",
+      durationMinutes: 5,
+      intensity: "vigorous",
+      endedAt: "2026-07-01T12:00:00.000Z",
     }),
   ];
 
-  const summary = summarizeExerciseSessions(sessions, [
-    "2026-08-16",
-    "2026-08-17",
-  ]);
+  const today = summarizeExerciseSessions(sessions, ["2026-08-17"]);
+  assert.equal(today.sessions.length, 2);
+  assert.equal(today.activeDayCount, 1);
+  assert.equal(today.totalMinutes, 50);
+  assert.equal(today.moderateAerobicMinutes, 30);
+  assert.equal(today.vigorousAerobicMinutes, 20);
+  assert.equal(today.moderateEquivalentMinutes, 70);
+  assert.equal(today.strengthDayCount, 0);
 
-  assert.equal(summary.sessions.length, 6);
-  assert.equal(summary.totalMinutes, 95);
-  assert.equal(summary.moderateAerobicMinutes, 30);
-  assert.equal(summary.vigorousAerobicMinutes, 20);
-  assert.equal(summary.moderateEquivalentMinutes, 70);
+  const sevenDays = summarizeExerciseSessions(
+    sessions,
+    getTrailingTehranDateKeys("2026-08-17", 7),
+  );
+  assert.equal(sevenDays.sessions.length, 4);
+  assert.equal(sevenDays.activeDayCount, 3);
+  assert.equal(sevenDays.totalMinutes, 75);
+  assert.equal(sevenDays.moderateEquivalentMinutes, 70);
+  assert.equal(sevenDays.strengthDayCount, 2);
+
+  const thirtyDays = summarizeExerciseSessions(
+    sessions,
+    getTrailingTehranDateKeys("2026-08-17", 30),
+  );
+  assert.equal(thirtyDays.sessions.length, 6);
+  assert.equal(thirtyDays.activeDayCount, 5);
+  assert.equal(thirtyDays.totalMinutes, 105);
+  assert.equal(thirtyDays.moderateEquivalentMinutes, 70);
+  assert.equal(thirtyDays.strengthDayCount, 4);
+
+  const allTime = summarizeExerciseSessions(sessions, null);
+  assert.equal(allTime.sessions.length, 8);
+  assert.equal(allTime.activeDayCount, 7);
+  assert.equal(allTime.totalMinutes, 150);
+  assert.equal(allTime.moderateEquivalentMinutes, 110);
+  assert.equal(allTime.strengthDayCount, 4);
+
+  const empty = summarizeExerciseSessions(sessions, []);
+  assert.equal(empty.sessions.length, 0);
+  assert.equal(empty.activeDayCount, 0);
+  assert.equal(empty.totalMinutes, 0);
+  assert.equal(empty.moderateEquivalentMinutes, 0);
+  assert.equal(empty.strengthDayCount, 0);
+});
+
+test("exercise summaries keep light and unknown aerobic work separate and dedupe strength dates", () => {
+  const sameDaySessions = [
+    exerciseSession({
+      id: "light-walk",
+      activityType: "walking",
+      durationMinutes: 12,
+      intensity: "light",
+    }),
+    exerciseSession({
+      id: "unknown-bike",
+      durationMinutes: 8,
+      intensity: "unknown",
+    }),
+    exerciseSession({
+      id: "strength-one",
+      activityType: "strength-training",
+      durationMinutes: 10,
+      intensity: "moderate",
+    }),
+    exerciseSession({
+      id: "strength-two",
+      activityType: "strength-training",
+      durationMinutes: 5,
+      intensity: "vigorous",
+    }),
+  ];
+
+  const summary = summarizeExerciseSessions(sameDaySessions, ["2026-08-17"]);
+  assert.equal(summary.sessions.length, 4);
+  assert.equal(summary.activeDayCount, 1);
+  assert.equal(summary.totalMinutes, 35);
+  assert.equal(summary.moderateAerobicMinutes, 0);
+  assert.equal(summary.vigorousAerobicMinutes, 0);
+  assert.equal(summary.moderateEquivalentMinutes, 0);
   assert.equal(summary.strengthDayCount, 1);
 });
 

@@ -2989,8 +2989,8 @@ export default function MedTrackApp() {
         body: "Measure at the same landmark and under similar conditions. The 14-Care-Day interval is a low-noise app reminder that you can adjust with your clinician.",
       },
       activity: {
-        title: "Activity review due",
-        body: "Record movement, strength sessions, sitting time, and how your conditioning feels.",
+        title: "Weekly context reflection due",
+        body: "Optionally record sitting time, conditioning, symptoms, and barriers. Exercise totals come from your daily session log.",
       },
     } as const;
     const hasCurrentBloodPressureTask = evaluation.tasks.some(
@@ -3380,7 +3380,7 @@ export default function MedTrackApp() {
         updatedAt,
       };
     });
-    toast.success("Activity check-in saved");
+    toast.success("Weekly context reflection saved");
   }
 
   function handleDeleteActivityCheckIn(id: string) {
@@ -3397,7 +3397,7 @@ export default function MedTrackApp() {
       },
       updatedAt,
     }));
-    toast.success("Activity check-in deleted");
+    toast.success("Weekly context reflection deleted");
   }
 
   function handleAddExerciseSession(session: ExerciseSession) {
@@ -3408,7 +3408,6 @@ export default function MedTrackApp() {
       const nextSession: ExerciseSession = {
         ...session,
         createdAt: existing?.createdAt ?? session.createdAt,
-        careDayKey: careDayKeyForInstant(session.endedAt),
         updatedAt,
       };
 

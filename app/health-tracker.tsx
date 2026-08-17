@@ -61,6 +61,8 @@ import {
   evaluateHealthTasks,
 } from "@/app/health-schedule";
 import {
+  getExerciseSessionTehranDateKey,
+  getTrailingTehranDateKeys,
   isAerobicExerciseActivityType,
   normalizeNewBloodPressureReading,
   summarizeExerciseSessions,
@@ -276,6 +278,18 @@ const STRENGTH_RESISTANCE_LABELS: Record<StrengthResistanceType, string> = {
   other: "Other",
 };
 
+type ExerciseReportRange = "today" | "7-days" | "30-days" | "all";
+
+const EXERCISE_REPORT_RANGE_OPTIONS: ReadonlyArray<{
+  id: ExerciseReportRange;
+  label: string;
+}> = [
+  { id: "today", label: "Today" },
+  { id: "7-days", label: "7 days" },
+  { id: "30-days", label: "30 days" },
+  { id: "all", label: "All" },
+];
+
 type MaybePromise = void | Promise<void>;
 
 export interface HealthTrackerProps {
@@ -403,6 +417,16 @@ function formatDateTime(value: string) {
     timeZone: HEALTH_TIME_ZONE,
     month: "short",
     day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatTimeOnly(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Invalid time";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: HEALTH_TIME_ZONE,
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
@@ -2787,6 +2811,133 @@ function WaistForm({
   );
 }
 
+function ExerciseSessionCard({
+  session,
+  onEdit,
+  onDelete,
+}: {
+  session: ExerciseSession;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const label =
+    session.customActivityName?.trim() ||
+    EXERCISE_ACTIVITY_LABELS[session.activityType];
+  const exerciseCount = session.strengthExercises?.length ?? 0;
+  const setCount =
+    session.strengthExercises?.reduce(
+      (total, exercise) => total + exercise.setCount,
+      0,
+    ) ?? 0;
+
+  return (
+    <article className="rounded-md bg-zinc-50 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h5 className="font-semibold text-zinc-950">{label}</h5>
+          <p className="mt-0.5 text-sm text-zinc-700">
+            {session.durationMinutes.toLocaleString(undefined, {
+              maximumFractionDigits: 1,
+            })} min · {EXERCISE_INTENSITY_LABELS[session.intensity]}
+          </p>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            Ended {formatTimeOnly(session.endedAt)} Iran time
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <button
+            type="button"
+            className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-200 text-zinc-500 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+            aria-label={`Edit ${label} session`}
+            onClick={onEdit}
+          >
+            <Edit3 className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <DeleteButton label={`Delete ${label} session`} onDelete={onDelete} />
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-xs text-zinc-700">
+        {session.perceivedExertion === undefined ? null : (
+          <span className="rounded-full bg-white px-2 py-1">
+            Perceived effort {session.perceivedExertion}/10
+          </span>
+        )}
+        {session.distanceKm === undefined ? null : (
+          <span className="rounded-full bg-white px-2 py-1">
+            {session.distanceKm.toLocaleString(undefined, {
+              maximumFractionDigits: 2,
+            })} km
+          </span>
+        )}
+        {session.steps === undefined ? null : (
+          <span className="rounded-full bg-white px-2 py-1">
+            {session.steps.toLocaleString()} steps
+          </span>
+        )}
+        {session.averageHeartRateBpm === undefined ? null : (
+          <span className="rounded-full bg-white px-2 py-1">
+            Avg HR {session.averageHeartRateBpm} bpm
+          </span>
+        )}
+        {session.averageCadenceRpm === undefined ? null : (
+          <span className="rounded-full bg-white px-2 py-1">
+            Avg {session.averageCadenceRpm} rpm
+          </span>
+        )}
+        {session.equipmentName ? (
+          <span className="rounded-full bg-white px-2 py-1">
+            {session.equipmentName}
+          </span>
+        ) : null}
+        {session.resistanceLevel ? (
+          <span className="rounded-full bg-white px-2 py-1">
+            Level {session.resistanceLevel}
+          </span>
+        ) : null}
+        {exerciseCount ? (
+          <span className="rounded-full bg-white px-2 py-1">
+            {exerciseCount} exercise{exerciseCount === 1 ? "" : "s"} · {setCount} sets
+          </span>
+        ) : null}
+      </div>
+      {session.strengthExercises?.length ? (
+        <details className="mt-2 rounded-md border border-zinc-200 bg-white text-xs">
+          <summary className="cursor-pointer px-2.5 py-2 font-semibold text-zinc-700">
+            Strength details
+          </summary>
+          <ul className="space-y-1.5 border-t border-zinc-100 px-2.5 py-2 text-zinc-600">
+            {session.strengthExercises.map((exercise) => (
+              <li key={exercise.id}>
+                <strong className="text-zinc-800">{exercise.name}</strong>: {exercise.setCount} sets
+                {` · ${STRENGTH_RESISTANCE_LABELS[exercise.resistanceType]}`}
+                {exercise.totalReps === undefined
+                  ? ""
+                  : ` · ${exercise.totalReps} total reps`}
+                {exercise.loadKg === undefined ? "" : ` · ${exercise.loadKg} kg`}
+                {exercise.muscleGroups.length
+                  ? ` · ${exercise.muscleGroups
+                      .map((group) => STRENGTH_MUSCLE_GROUP_LABELS[group])
+                      .join(", ")}`
+                  : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {session.symptoms ? (
+        <p className="mt-2 break-words text-xs text-amber-900">
+          <strong>Symptoms:</strong> {session.symptoms}
+        </p>
+      ) : null}
+      {session.notes ? (
+        <p className="mt-1 break-words text-xs text-zinc-600">
+          <strong>Note:</strong> {session.notes}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
 type StrengthExerciseDraft = {
   id: string;
   name: string;
@@ -3114,7 +3265,6 @@ function ExerciseSessionForm({
       await onAdd({
         id: editingSession?.id ?? makeId("exercise-session"),
         endedAt: endIso,
-        careDayKey: careDayKeyForInstant(endIso),
         activityType,
         ...(isCustomActivity
           ? { customActivityName: customActivityName.trim() }
@@ -3165,11 +3315,12 @@ function ExerciseSessionForm({
       className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4"
     >
       <h3 className="font-semibold text-zinc-950">
-        {editingSession ? "Edit exercise session" : "Log an exercise session"}
+        {editingSession ? "Edit exercise session" : "Log daily activity"}
       </h3>
       <p className="mt-1 text-xs leading-5 text-zinc-600">
-        Type, active duration and relative intensity are the analysis-ready core.
-        Add only the details you actually know; blank does not mean zero.
+        Add one or more sessions for the day. The Iran end date decides which
+        calendar day the session belongs to; blank optional details stay unknown,
+        not zero.
       </p>
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -3635,7 +3786,7 @@ function ActivityForm({
       setSedentaryHours("");
       setSymptoms("");
       setNotes("");
-      setMessage("Weekly activity review saved.");
+      setMessage("Weekly context reflection saved.");
     } catch (error) {
       setMessage(errorText(error));
     } finally {
@@ -3644,8 +3795,8 @@ function ActivityForm({
   }
 
   return (
-    <form id="activity-entry" onSubmit={submit} className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4">
-      <h3 className="font-semibold text-zinc-950">Weekly movement & strength review</h3>
+    <form id="activity-context-form" onSubmit={submit} className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4">
+      <h3 className="font-semibold text-zinc-950">Weekly context reflection</h3>
       <p className="mt-1 text-xs leading-5 text-zinc-600">Session minutes and strength days are calculated above from the raw log. This review captures sitting, conditioning, symptoms and barriers without creating a second source of truth.</p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label><span className={LABEL_CLASS}>Sitting hours/day</span><input className={INPUT_CLASS} type="number" inputMode="decimal" min="0" max="24" step="0.5" value={sedentaryHours} onChange={(event) => setSedentaryHours(event.target.value)} /></label>
@@ -4148,7 +4299,7 @@ function SettingsPanel({
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700"><input type="checkbox" checked={draft.waistReminderEnabled} onChange={(event) => setField("waistReminderEnabled", event.target.checked)} />Enable waist reminders</label>
-            <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700"><input type="checkbox" checked={draft.activityReminderEnabled} onChange={(event) => setField("activityReminderEnabled", event.target.checked)} />Enable weekly activity review</label>
+            <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700"><input type="checkbox" checked={draft.activityReminderEnabled} onChange={(event) => setField("activityReminderEnabled", event.target.checked)} />Enable optional weekly context reminder</label>
           </div>
         </fieldset>
 
@@ -4240,7 +4391,8 @@ export function HealthTracker({
   onUpdateProfile,
   onUpdateSettings,
 }: HealthTrackerProps) {
-  const [showAllExerciseSessions, setShowAllExerciseSessions] = useState(false);
+  const [exerciseReportRange, setExerciseReportRange] =
+    useState<ExerciseReportRange>("today");
   const [editingExerciseSession, setEditingExerciseSession] =
     useState<ExerciseSession | null>(null);
   const validNow = Number.isFinite(now.getTime()) ? now : new Date(0);
@@ -4265,9 +4417,6 @@ export function HealthTracker({
       ),
     [exerciseSessions],
   );
-  const visibleExerciseSessions = showAllExerciseSessions
-    ? sortedExerciseSessions
-    : sortedExerciseSessions.slice(-8);
 
   const latestWeight = sortedWeights.at(-1);
   const currentWeight = latestWeight?.weightKg ?? settings.baselineWeightKg;
@@ -4405,17 +4554,29 @@ export function HealthTracker({
   const offPlanDays = weeklyDiet.filter((entry) => entry.adherence === "off-plan").length;
   const sodiumAwareDays = weeklyDiet.filter((entry) => entry.sodiumAware).length;
 
+  const todayCalendarKey = localDateKey(validNow);
+  const exerciseRangeDateKeys =
+    exerciseReportRange === "all"
+      ? null
+      : getTrailingTehranDateKeys(
+          todayCalendarKey,
+          exerciseReportRange === "today"
+            ? 1
+            : exerciseReportRange === "7-days"
+              ? 7
+              : 30,
+        );
   const exerciseSummary = summarizeExerciseSessions(
     sortedExerciseSessions,
-    lastSevenDayKeys,
+    exerciseRangeDateKeys,
   );
-  const sevenDayExerciseSessions = exerciseSummary.sessions;
-  const sevenDayExerciseMinutes = exerciseSummary.totalMinutes;
+  const selectedExerciseSessions = exerciseSummary.sessions;
+  const selectedExerciseMinutes = exerciseSummary.totalMinutes;
   const moderateEquivalentMinutes =
     exerciseSummary.moderateEquivalentMinutes;
   const strengthDayCount = exerciseSummary.strengthDayCount;
   const exerciseMinutesByType = Array.from(
-    sevenDayExerciseSessions.reduce((minutesByType, session) => {
+    selectedExerciseSessions.reduce((minutesByType, session) => {
       const label =
         session.customActivityName?.trim() ||
         EXERCISE_ACTIVITY_LABELS[session.activityType];
@@ -4431,6 +4592,45 @@ export function HealthTracker({
     0,
     100,
   );
+  const exerciseSessionsByDate = Array.from(
+    selectedExerciseSessions.reduce((sessionsByDate, session) => {
+      const dateKey = getExerciseSessionTehranDateKey(session);
+      if (!dateKey) return sessionsByDate;
+      sessionsByDate.set(dateKey, [
+        ...(sessionsByDate.get(dateKey) ?? []),
+        session,
+      ]);
+      return sessionsByDate;
+    }, new Map<string, ExerciseSession[]>()),
+  )
+    .map(([dateKey, sessions]) => ({
+      dateKey,
+      sessions,
+      summary: summarizeExerciseSessions(sessions, [dateKey]),
+      distanceKm: sessions.reduce(
+        (total, session) => total + (session.distanceKm ?? 0),
+        0,
+      ),
+      steps: sessions.reduce(
+        (total, session) => total + (session.steps ?? 0),
+        0,
+      ),
+    }))
+    .sort((first, second) => second.dateKey.localeCompare(first.dateKey));
+  const selectedExerciseRangeStart =
+    exerciseRangeDateKeys?.[0] ??
+    exerciseSessionsByDate.at(-1)?.dateKey ??
+    todayCalendarKey;
+  const selectedExerciseRangeEnd =
+    exerciseRangeDateKeys?.at(-1) ??
+    exerciseSessionsByDate[0]?.dateKey ??
+    todayCalendarKey;
+  const selectedExerciseRangeLabel =
+    exerciseReportRange === "all" && exerciseSessionsByDate.length === 0
+      ? "No sessions yet"
+      : selectedExerciseRangeStart === selectedExerciseRangeEnd
+      ? selectedExerciseRangeStart
+      : `${selectedExerciseRangeStart} – ${selectedExerciseRangeEnd}`;
 
   const todayWeights = sortedWeights.filter(
     (entry) => entryCareDayKey(entry) === todayKey,
@@ -4543,8 +4743,8 @@ export function HealthTracker({
       ? [
           {
             id: "activity",
-            label: "Weekly activity review",
-            detail: "Movement, strength, sitting, and conditioning",
+            label: "Optional weekly context",
+            detail: "Sitting, conditioning, symptoms, and barriers",
             done: taskById.get("activity")?.status === "complete",
             dueNow: taskById.get("activity")?.status === "due",
             href: "#activity-entry",
@@ -4552,6 +4752,27 @@ export function HealthTracker({
         ]
       : []),
   ];
+
+  async function saveExerciseSession(session: ExerciseSession) {
+    await Promise.resolve(onAddExerciseSession(session));
+    const sessionDate = getExerciseSessionTehranDateKey(session);
+    if (
+      !sessionDate ||
+      exerciseRangeDateKeys === null ||
+      exerciseRangeDateKeys.includes(sessionDate)
+    ) {
+      return;
+    }
+    const sevenDayKeys = getTrailingTehranDateKeys(todayCalendarKey, 7);
+    if (sevenDayKeys.includes(sessionDate)) {
+      setExerciseReportRange("7-days");
+      return;
+    }
+    const thirtyDayKeys = getTrailingTehranDateKeys(todayCalendarKey, 30);
+    setExerciseReportRange(
+      thirtyDayKeys.includes(sessionDate) ? "30-days" : "all",
+    );
+  }
 
   function confirmDelete(label: string, callback: () => MaybePromise) {
     if (!window.confirm(`Delete ${label}? This action will sync as a deletion.`)) return;
@@ -5272,19 +5493,62 @@ export function HealthTracker({
         <SectionHeading
           icon={<Dumbbell className="h-5 w-5" aria-hidden="true" />}
           title="Movement & strength"
-          description="Log each real session in a structured form, then review rolling activity patterns without losing the separate weekly baseline review."
+          description="Log activity day by day, then let the app derive calendar-based ranges and trends from those sessions."
         />
         <span id="activity-section-title" className="sr-only">Movement and strength</span>
 
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <ExerciseSessionForm
+          key={editingExerciseSession?.id ?? "new-exercise-session"}
+          now={validNow}
+          onAdd={saveExerciseSession}
+          editingSession={editingExerciseSession}
+          onCancelEdit={() => setEditingExerciseSession(null)}
+        />
+
+        <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 sm:p-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-zinc-950">Derived time range</h3>
+              <p className="mt-0.5 text-xs text-zinc-600" aria-live="polite">
+                {selectedExerciseRangeLabel} · Tehran calendar dates, midnight to midnight
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1 rounded-lg border border-zinc-200 bg-white p-1" role="group" aria-label="Exercise report range">
+              {EXERCISE_REPORT_RANGE_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={exerciseReportRange === option.id}
+                  className={`min-h-10 rounded-md px-3 py-2 text-sm font-semibold transition ${
+                    exerciseReportRange === option.id
+                      ? "bg-emerald-600 text-white"
+                      : "text-zinc-600 hover:bg-zinc-50"
+                  }`}
+                  onClick={() => setExerciseReportRange(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-zinc-500">
+            Reports are calculated from daily session records. A date with no entry stays unknown; it is not treated as rest or zero activity.
+          </p>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <div className="rounded-md bg-zinc-50 p-3">
-            <p className="text-xs font-medium text-zinc-500">Sessions · 7 Care Days</p>
-            <p className="mt-1 text-xl font-semibold text-zinc-950">{sevenDayExerciseSessions.length}</p>
-            <p className="text-xs text-zinc-500">Each logged workout</p>
+            <p className="text-xs font-medium text-zinc-500">Days with entries</p>
+            <p className="mt-1 text-xl font-semibold text-zinc-950">
+              {exerciseSummary.activeDayCount}
+            </p>
+            <p className="text-xs text-zinc-500">
+              {selectedExerciseSessions.length} logged session{selectedExerciseSessions.length === 1 ? "" : "s"}
+            </p>
           </div>
           <div className="rounded-md bg-emerald-50 p-3">
             <p className="text-xs font-medium text-emerald-700">All active minutes</p>
-            <p className="mt-1 text-xl font-semibold text-emerald-950">{sevenDayExerciseMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-950">{selectedExerciseMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}</p>
             <p className="text-xs text-emerald-700">Includes light and mobility</p>
           </div>
           <div className="rounded-md bg-sky-50 p-3">
@@ -5300,174 +5564,156 @@ export function HealthTracker({
         </div>
 
         <div className="mt-4 rounded-md border border-zinc-200 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <span className="font-semibold text-zinc-800">General adult aerobic reference</span>
-            <span className="font-semibold text-emerald-700">{moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} / 150 min</span>
-          </div>
-          <div
-            className="mt-2 h-2.5 overflow-hidden rounded-full bg-zinc-100"
-            role="progressbar"
-            aria-label="Progress toward the general 150-minute adult aerobic reference"
-            aria-valuemin={0}
-            aria-valuemax={150}
-            aria-valuenow={Math.min(150, Math.round(moderateEquivalentMinutes))}
-          >
-            <div className="h-full rounded-full bg-emerald-600" style={{ width: `${generalAerobicReferenceProgress}%` }} />
-          </div>
-          <p className="mt-2 text-xs leading-5 text-zinc-500">
-            This is a general-population reference, not a personalized starting dose. Light activity remains visible in total minutes; strength and mobility are not misclassified as aerobic minutes.
-          </p>
-          {exerciseMinutesByType.length ? (
-            <div className="mt-3 flex flex-wrap gap-2" aria-label="Minutes by activity type">
-              {exerciseMinutesByType.map(([label, minutes]) => (
-                <span key={label} className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700">
-                  {label} · {minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min
-                </span>
-              ))}
+          {exerciseReportRange === "7-days" ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span className="font-semibold text-zinc-800">General adult aerobic reference</span>
+                <span className="font-semibold text-emerald-700">{moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} / 150 min</span>
+              </div>
+              <div
+                className="mt-2 h-2.5 overflow-hidden rounded-full bg-zinc-100"
+                role="progressbar"
+                aria-label="Progress toward the general 150-minute adult aerobic reference"
+                aria-valuemin={0}
+                aria-valuemax={150}
+                aria-valuenow={Math.min(150, Math.round(moderateEquivalentMinutes))}
+              >
+                <div className="h-full rounded-full bg-emerald-600" style={{ width: `${generalAerobicReferenceProgress}%` }} />
+              </div>
+              <p className="mt-2 text-xs leading-5 text-zinc-500">
+                This is a general-population reference, not a personalized starting dose. Light activity remains visible in total minutes; strength and mobility are not misclassified as aerobic minutes.
+              </p>
+            </>
+          ) : (
+            <div>
+              <p className="text-sm font-semibold text-zinc-800">Activity mix for this range</p>
+              <p className="mt-0.5 text-xs text-zinc-500">All figures below are derived from the daily session log.</p>
             </div>
-          ) : null}
-        </div>
-
-        <div className="mt-4">
-          <ExerciseSessionForm
-            key={editingExerciseSession?.id ?? "new-exercise-session"}
-            now={validNow}
-            onAdd={onAddExerciseSession}
-            editingSession={editingExerciseSession}
-            onCancelEdit={() => setEditingExerciseSession(null)}
-          />
+          )}
+          {exerciseMinutesByType.length ? (
+            <>
+              <p className="mt-3 text-xs font-semibold text-zinc-700">Minutes by activity</p>
+              <div className="mt-2 flex flex-wrap gap-2" aria-label="Minutes by activity type">
+                {exerciseMinutesByType.map(([label, minutes]) => (
+                  <span key={label} className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700">
+                    {label} · {minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-500">No activity types logged in this range.</p>
+          )}
         </div>
 
         <div className="mt-4 rounded-lg border border-zinc-200 p-3 sm:p-4">
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
-              <h3 className="font-semibold text-zinc-900">Recent exercise sessions</h3>
-              <p className="mt-0.5 text-xs text-zinc-500">Raw sessions stay separate so future trends can be recomputed accurately.</p>
+              <h3 className="font-semibold text-zinc-900">Daily exercise history</h3>
+              <p className="mt-0.5 text-xs text-zinc-500">{selectedExerciseRangeLabel} · grouped by Tehran calendar date</p>
             </div>
-            <div className="flex items-center gap-3">
-              {sortedExerciseSessions.length > 8 ? (
-                <button
-                  type="button"
-                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-800"
-                  onClick={() => setShowAllExerciseSessions((current) => !current)}
-                >
-                  {showAllExerciseSessions
-                    ? "Show newest 8"
-                    : `Show all ${sortedExerciseSessions.length}`}
-                </button>
-              ) : null}
-              <span className="text-xs text-zinc-500">Newest first</span>
-            </div>
+            <span className="text-xs text-zinc-500">Newest day first</span>
           </div>
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
-            {sortedExerciseSessions.length ? (
-              [...visibleExerciseSessions].reverse().map((session) => {
-                const label = session.customActivityName?.trim() || EXERCISE_ACTIVITY_LABELS[session.activityType];
-                const exerciseCount = session.strengthExercises?.length ?? 0;
-                const setCount = session.strengthExercises?.reduce((total, exercise) => total + exercise.setCount, 0) ?? 0;
-                return (
-                  <article key={session.id} className="rounded-md bg-zinc-50 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-semibold text-zinc-950">{label}</p>
-                        <p className="mt-0.5 text-sm text-zinc-700">{session.durationMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min · {EXERCISE_INTENSITY_LABELS[session.intensity]}</p>
-                        <p className="mt-0.5 text-xs text-zinc-500">Ended {formatDateTime(session.endedAt)} · Care Day {session.careDayKey ?? careDayKeyForInstant(session.endedAt)}</p>
-                      </div>
-                      <div className="flex shrink-0 gap-1">
-                        <button
-                          type="button"
-                          className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-200 text-zinc-500 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-                          aria-label={`Edit ${label} session`}
-                          onClick={() => {
-                            setEditingExerciseSession(session);
-                            window.requestAnimationFrame(() =>
-                              document
-                                .getElementById("exercise-session-entry")
-                                ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-                            );
-                          }}
-                        >
-                          <Edit3 className="h-4 w-4" aria-hidden="true" />
-                        </button>
-                        <DeleteButton
-                          label={`Delete ${label} session`}
-                          onDelete={() =>
-                            confirmDelete("this exercise session", async () => {
-                              await onDeleteExerciseSession(session.id);
-                              if (editingExerciseSession?.id === session.id) {
-                                setEditingExerciseSession(null);
-                              }
-                            })
-                          }
-                        />
-                      </div>
+          <div className="mt-3 space-y-4">
+            {exerciseSessionsByDate.length ? (
+              exerciseSessionsByDate.map((day) => (
+                <section key={day.dateKey} className="overflow-hidden rounded-lg border border-zinc-200">
+                  <div className="flex flex-wrap items-start justify-between gap-3 bg-zinc-50 px-3 py-2.5">
+                    <div>
+                      <h4 className="font-semibold text-zinc-950">
+                        {day.dateKey === todayCalendarKey ? `Today · ${day.dateKey}` : day.dateKey}
+                      </h4>
+                      <p className="mt-0.5 text-xs text-zinc-500">
+                        {day.sessions.length} session{day.sessions.length === 1 ? "" : "s"} · {day.summary.totalMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} active min
+                      </p>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-1.5 text-xs text-zinc-700">
-                      {session.perceivedExertion === undefined ? null : <span className="rounded-full bg-white px-2 py-1">Perceived effort {session.perceivedExertion}/10</span>}
-                      {session.distanceKm === undefined ? null : <span className="rounded-full bg-white px-2 py-1">{session.distanceKm.toLocaleString(undefined, { maximumFractionDigits: 2 })} km</span>}
-                      {session.steps === undefined ? null : <span className="rounded-full bg-white px-2 py-1">{session.steps.toLocaleString()} steps</span>}
-                      {session.averageHeartRateBpm === undefined ? null : <span className="rounded-full bg-white px-2 py-1">Avg HR {session.averageHeartRateBpm} bpm</span>}
-                      {session.averageCadenceRpm === undefined ? null : <span className="rounded-full bg-white px-2 py-1">Avg {session.averageCadenceRpm} rpm</span>}
-                      {session.equipmentName ? <span className="rounded-full bg-white px-2 py-1">{session.equipmentName}</span> : null}
-                      {session.resistanceLevel ? <span className="rounded-full bg-white px-2 py-1">Level {session.resistanceLevel}</span> : null}
-                      {exerciseCount ? <span className="rounded-full bg-white px-2 py-1">{exerciseCount} exercise{exerciseCount === 1 ? "" : "s"} · {setCount} sets</span> : null}
+                    <div className="flex flex-wrap justify-end gap-1.5 text-xs text-zinc-700">
+                      {day.summary.moderateEquivalentMinutes > 0 ? (
+                        <span className="rounded-full bg-sky-100 px-2 py-1">{day.summary.moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} moderate-equivalent min</span>
+                      ) : null}
+                      {day.summary.strengthDayCount > 0 ? (
+                        <span className="rounded-full bg-violet-100 px-2 py-1">Strength</span>
+                      ) : null}
+                      {day.distanceKm > 0 ? (
+                        <span className="rounded-full bg-white px-2 py-1">{day.distanceKm.toLocaleString(undefined, { maximumFractionDigits: 2 })} km</span>
+                      ) : null}
+                      {day.steps > 0 ? (
+                        <span className="rounded-full bg-white px-2 py-1">{day.steps.toLocaleString()} steps</span>
+                      ) : null}
                     </div>
-                    {session.strengthExercises?.length ? (
-                      <details className="mt-2 rounded-md border border-zinc-200 bg-white text-xs">
-                        <summary className="cursor-pointer px-2.5 py-2 font-semibold text-zinc-700">Strength details</summary>
-                        <ul className="space-y-1.5 border-t border-zinc-100 px-2.5 py-2 text-zinc-600">
-                          {session.strengthExercises.map((exercise) => (
-                            <li key={exercise.id}>
-                              <strong className="text-zinc-800">{exercise.name}</strong>: {exercise.setCount} sets
-                              {` · ${STRENGTH_RESISTANCE_LABELS[exercise.resistanceType]}`}
-                              {exercise.totalReps === undefined ? "" : ` · ${exercise.totalReps} total reps`}
-                              {exercise.loadKg === undefined ? "" : ` · ${exercise.loadKg} kg`}
-                              {exercise.muscleGroups.length ? ` · ${exercise.muscleGroups.map((group) => STRENGTH_MUSCLE_GROUP_LABELS[group]).join(", ")}` : ""}
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    ) : null}
-                    {session.symptoms ? <p className="mt-2 break-words text-xs text-amber-900"><strong>Symptoms:</strong> {session.symptoms}</p> : null}
-                    {session.notes ? <p className="mt-1 break-words text-xs text-zinc-600"><strong>Note:</strong> {session.notes}</p> : null}
-                  </article>
-                );
-              })
+                  </div>
+                  <div className="grid gap-3 p-3 lg:grid-cols-2">
+                    {[...day.sessions].reverse().map((session) => (
+                      <ExerciseSessionCard
+                        key={session.id}
+                        session={session}
+                        onEdit={() => {
+                          setEditingExerciseSession(session);
+                          window.requestAnimationFrame(() =>
+                            document
+                              .getElementById("exercise-session-entry")
+                              ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                          );
+                        }}
+                        onDelete={() =>
+                          confirmDelete("this exercise session", async () => {
+                            await onDeleteExerciseSession(session.id);
+                            if (editingExerciseSession?.id === session.id) {
+                              setEditingExerciseSession(null);
+                            }
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))
             ) : (
-              <p className="text-sm text-zinc-500 lg:col-span-2">No structured exercise sessions yet. Your first bike ride or walk will appear here.</p>
+              <p className="text-sm leading-6 text-zinc-500">
+                No daily exercise entry in this range. That means no data was
+                recorded; it does not automatically mean a rest day or zero activity.
+              </p>
             )}
           </div>
         </div>
 
-        <div className="mt-6 border-t border-zinc-200 pt-5">
-          <div className="mb-3">
-            <h3 className="font-semibold text-zinc-950">Weekly baseline review</h3>
-            <p className="mt-0.5 text-xs leading-5 text-zinc-500">This reflection tracks sitting, conditioning and barriers. It does not duplicate or replace individual session logs.</p>
-          </div>
-          <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-            <ActivityForm onAdd={onAddActivity} />
-            <div className="rounded-lg border border-zinc-200 p-3">
-              <h3 className="font-semibold text-zinc-900">Weekly reviews</h3>
-              <div className="mt-2 space-y-2">
-                {sortedActivity.length ? sortedActivity.slice(-5).reverse().map((entry) => (
-                  <div key={entry.id} className="flex items-start justify-between gap-2 rounded-md bg-zinc-50 p-2.5">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold">
-                        {entry.movementMinutes !== undefined || entry.strengthSessions !== undefined
-                          ? `${entry.movementMinutes ?? "—"} min · ${entry.strengthSessions ?? "—"} strength`
-                          : `Conditioning: ${entry.perceivedConditioning ?? "not rated"}`}
-                      </p>
-                      <p className="text-xs text-zinc-500">{formatDateTime(entry.measuredAt)}{entry.movementMinutes !== undefined || entry.strengthSessions !== undefined ? ` · ${entry.perceivedConditioning ?? "not rated"}` : ""}{entry.sedentaryHoursPerDay === undefined ? "" : ` · ${entry.sedentaryHoursPerDay} sitting hrs/day`}</p>
-                      {entry.symptoms ? <p className="mt-1 break-words text-xs text-amber-900"><strong>Limitation:</strong> {entry.symptoms}</p> : null}
-                      {entry.notes ? <p className="mt-1 break-words text-xs text-zinc-600"><strong>Note:</strong> {entry.notes}</p> : null}
+        <details
+          id="activity-entry"
+          className="mt-6 scroll-mt-4 rounded-lg border border-zinc-200"
+          open={taskById.get("activity")?.status === "due" ? true : undefined}
+        >
+          <summary className="cursor-pointer px-3 py-3 font-semibold text-zinc-950 sm:px-4">
+            Optional weekly context
+          </summary>
+          <div className="border-t border-zinc-200 p-3 sm:p-4">
+            <p className="mb-3 text-xs leading-5 text-zinc-500">
+              Sitting, conditioning and barriers can add context, but these reflections are never used to calculate daily exercise totals.
+            </p>
+            <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+              <ActivityForm onAdd={onAddActivity} />
+              <div className="rounded-lg border border-zinc-200 p-3">
+                <h3 className="font-semibold text-zinc-900">Weekly reflections</h3>
+                <div className="mt-2 space-y-2">
+                  {sortedActivity.length ? sortedActivity.slice(-5).reverse().map((entry) => (
+                    <div key={entry.id} className="flex items-start justify-between gap-2 rounded-md bg-zinc-50 p-2.5">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">
+                          {entry.movementMinutes !== undefined || entry.strengthSessions !== undefined
+                            ? `${entry.movementMinutes ?? "—"} min · ${entry.strengthSessions ?? "—"} strength (legacy)`
+                            : `Conditioning: ${entry.perceivedConditioning ?? "not rated"}`}
+                        </p>
+                        <p className="text-xs text-zinc-500">{formatDateTime(entry.measuredAt)}{entry.movementMinutes !== undefined || entry.strengthSessions !== undefined ? ` · ${entry.perceivedConditioning ?? "not rated"}` : ""}{entry.sedentaryHoursPerDay === undefined ? "" : ` · ${entry.sedentaryHoursPerDay} sitting hrs/day`}</p>
+                        {entry.symptoms ? <p className="mt-1 break-words text-xs text-amber-900"><strong>Limitation:</strong> {entry.symptoms}</p> : null}
+                        {entry.notes ? <p className="mt-1 break-words text-xs text-zinc-600"><strong>Note:</strong> {entry.notes}</p> : null}
+                      </div>
+                      <DeleteButton label="Delete weekly context reflection" onDelete={() => confirmDelete("this weekly context reflection", () => onDeleteActivity(entry.id))} />
                     </div>
-                    <DeleteButton label="Delete activity review" onDelete={() => confirmDelete("this activity review", () => onDeleteActivity(entry.id))} />
-                  </div>
-                )) : <p className="text-sm text-zinc-500">No weekly reviews yet.</p>}
+                  )) : <p className="text-sm text-zinc-500">No weekly reflections yet.</p>}
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        </details>
       </section>
 
       <SettingsPanel settings={settings} onUpdate={onUpdateSettings} />

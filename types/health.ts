@@ -186,8 +186,9 @@ export interface StrengthExerciseLog {
 
 export interface ExerciseSession {
   id: string;
-  /** When the completed session ended; active duration is stored separately. */
+  /** When the session ended; its Tehran civil date is the canonical exercise day. */
   endedAt: string;
+  /** @deprecated Medication-style noon-to-noon key retained only on legacy rows. */
   careDayKey?: string;
   activityType: ExerciseActivityType;
   customActivityName?: string;

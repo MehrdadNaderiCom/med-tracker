@@ -241,7 +241,10 @@ export function getHealthCareDayKey(value: string | Date): string | null {
   return hour < 12 ? previousDateKey(dateKey) : dateKey;
 }
 
-function getTehranCalendarDateKey(value: string) {
+export function getExerciseSessionTehranDateKey(
+  session: Pick<ExerciseSession, "endedAt">,
+) {
+  const value = session.endedAt;
   const instant = new Date(value);
   if (!Number.isFinite(instant.getTime())) return null;
   const parts = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
@@ -255,8 +258,32 @@ function getTehranCalendarDateKey(value: string) {
   return `${valueOf("year")}-${valueOf("month")}-${valueOf("day")}`;
 }
 
+export function getTrailingTehranDateKeys(
+  endDateKey: string,
+  dayCount: number,
+) {
+  if (
+    !validDateKey(endDateKey) ||
+    !Number.isInteger(dayCount) ||
+    dayCount < 1 ||
+    dayCount > 10_000
+  ) {
+    return [];
+  }
+  const [year, month, day] = endDateKey.split("-").map(Number);
+  const endDate = new Date(Date.UTC(year, month - 1, day));
+  if (endDate.toISOString().slice(0, 10) !== endDateKey) return [];
+  return Array.from({ length: dayCount }, (_, index) => {
+    const date = new Date(
+      Date.UTC(year, month - 1, day - (dayCount - 1 - index)),
+    );
+    return date.toISOString().slice(0, 10);
+  });
+}
+
 export type ExercisePeriodSummary = {
   sessions: ExerciseSession[];
+  activeDayCount: number;
   totalMinutes: number;
   moderateAerobicMinutes: number;
   vigorousAerobicMinutes: number;
@@ -267,12 +294,14 @@ export type ExercisePeriodSummary = {
 /** Derives report metrics from raw sessions; no aggregate is persisted. */
 export function summarizeExerciseSessions(
   sessions: readonly ExerciseSession[],
-  careDayKeys: readonly string[],
+  calendarDateKeys: readonly string[] | null,
 ): ExercisePeriodSummary {
-  const includedCareDays = new Set(careDayKeys);
+  const includedDates =
+    calendarDateKeys === null ? null : new Set(calendarDateKeys);
   const includedSessions = sessions.filter((session) => {
-    const key = session.careDayKey ?? getHealthCareDayKey(session.endedAt);
-    return key ? includedCareDays.has(key) : false;
+    const key = getExerciseSessionTehranDateKey(session);
+    if (!key) return false;
+    return includedDates === null || includedDates.has(key);
   });
   const aerobicSessions = includedSessions.filter((session) =>
     AEROBIC_EXERCISE_ACTIVITY_TYPES.has(session.activityType),
@@ -285,11 +314,15 @@ export function summarizeExerciseSessions(
     .reduce((total, session) => total + session.durationMinutes, 0);
   const strengthDates = includedSessions
     .filter((session) => session.activityType === "strength-training")
-    .map((session) => getTehranCalendarDateKey(session.endedAt))
+    .map((session) => getExerciseSessionTehranDateKey(session))
+    .filter((key): key is string => Boolean(key));
+  const activeDates = includedSessions
+    .map((session) => getExerciseSessionTehranDateKey(session))
     .filter((key): key is string => Boolean(key));
 
   return {
     sessions: includedSessions,
+    activeDayCount: new Set(activeDates).size,
     totalMinutes: includedSessions.reduce(
       (total, session) => total + session.durationMinutes,
       0,
@@ -681,7 +714,9 @@ function normalizeExerciseSession(value: unknown): ExerciseSession | null {
   return {
     id: value.id,
     endedAt,
-    careDayKey: normalizeCareDayKey(value.careDayKey, endedAt),
+    ...(validDateKey(value.careDayKey)
+      ? { careDayKey: value.careDayKey as string }
+      : {}),
     activityType,
     ...(customActivityName ? { customActivityName } : {}),
     durationMinutes,
