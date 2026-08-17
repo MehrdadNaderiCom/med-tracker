@@ -77,6 +77,7 @@ import type {
   ActivityCheckIn,
   BloodPressureSession,
   DietCheckIn,
+  ExerciseSession,
   HealthProfile,
   HealthSettings,
   WaistEntry,
@@ -3399,6 +3400,49 @@ export default function MedTrackApp() {
     toast.success("Activity check-in deleted");
   }
 
+  function handleAddExerciseSession(session: ExerciseSession) {
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.exerciseSessions.find(
+        (currentSession) => currentSession.id === session.id,
+      );
+      const nextSession: ExerciseSession = {
+        ...session,
+        createdAt: existing?.createdAt ?? session.createdAt,
+        careDayKey: careDayKeyForInstant(session.endedAt),
+        updatedAt,
+      };
+
+      return {
+        ...currentData,
+        exerciseSessions: [
+          nextSession,
+          ...currentData.exerciseSessions.filter(
+            (currentSession) => currentSession.id !== session.id,
+          ),
+        ],
+        updatedAt,
+      };
+    });
+    toast.success("Exercise session saved");
+  }
+
+  function handleDeleteExerciseSession(id: string) {
+    updateHealthData((currentData, updatedAt) => ({
+      ...currentData,
+      exerciseSessions: currentData.exerciseSessions.filter(
+        (session) => session.id !== id,
+      ),
+      deletedEntryIds: {
+        ...currentData.deletedEntryIds,
+        exerciseSessionIds: Array.from(
+          new Set([...currentData.deletedEntryIds.exerciseSessionIds, id]),
+        ),
+      },
+      updatedAt,
+    }));
+    toast.success("Exercise session deleted");
+  }
+
   async function handleUpdateHealthSettings(nextSettings: HealthSettings) {
     let settings = nextSettings;
     if (
@@ -4532,6 +4576,7 @@ export default function MedTrackApp() {
                 dietCheckIns={healthData.dietCheckIns}
                 waistEntries={healthData.waistEntries}
                 activityCheckIns={healthData.activityCheckIns}
+                exerciseSessions={healthData.exerciseSessions}
                 profile={healthData.profile}
                 settings={healthData.settings}
                 now={today}
@@ -4545,6 +4590,8 @@ export default function MedTrackApp() {
                 onDeleteWaist={handleDeleteWaist}
                 onAddActivity={handleAddActivityCheckIn}
                 onDeleteActivity={handleDeleteActivityCheckIn}
+                onAddExerciseSession={handleAddExerciseSession}
+                onDeleteExerciseSession={handleDeleteExerciseSession}
                 onUpdateProfile={handleUpdateHealthProfile}
                 onUpdateSettings={handleUpdateHealthSettings}
               />

@@ -18,6 +18,7 @@ import {
   TrendingDown,
   Ruler,
   Dumbbell,
+  Edit3,
 } from "lucide-react";
 import type {
   FormEvent,
@@ -40,8 +41,14 @@ import type {
   BloodPressureSymptom,
   DietAdherence,
   DietCheckIn,
+  ExerciseActivityType,
+  ExerciseIntensity,
+  ExerciseSession,
   HealthProfile,
   HealthSettings,
+  StrengthExerciseLog,
+  StrengthMuscleGroup,
+  StrengthResistanceType,
   WaistEntry,
   WaistMeasurementMethod,
   WeightEntry,
@@ -54,7 +61,9 @@ import {
   evaluateHealthTasks,
 } from "@/app/health-schedule";
 import {
+  isAerobicExerciseActivityType,
   normalizeNewBloodPressureReading,
+  summarizeExerciseSessions,
   type NewBloodPressureReading,
 } from "@/app/health-data";
 
@@ -201,6 +210,72 @@ const BP_SYMPTOM_LABELS: Record<BloodPressureSymptom, string> = {
   palpitations: "Palpitations",
 };
 
+const EXERCISE_ACTIVITY_OPTIONS: ReadonlyArray<{
+  id: ExerciseActivityType;
+  label: string;
+}> = [
+  { id: "stationary-bike", label: "Stationary bike" },
+  { id: "walking", label: "Walking" },
+  { id: "outdoor-cycling", label: "Outdoor cycling" },
+  { id: "running", label: "Running / jogging" },
+  { id: "elliptical", label: "Elliptical" },
+  { id: "swimming", label: "Swimming" },
+  { id: "strength-training", label: "Strength training" },
+  { id: "mobility", label: "Mobility / stretching" },
+  { id: "other-aerobic", label: "Other aerobic activity" },
+  { id: "other", label: "Other movement" },
+];
+
+const EXERCISE_ACTIVITY_LABELS = Object.fromEntries(
+  EXERCISE_ACTIVITY_OPTIONS.map(({ id, label }) => [id, label]),
+) as Record<ExerciseActivityType, string>;
+
+const EXERCISE_INTENSITY_LABELS: Record<ExerciseIntensity, string> = {
+  light: "Light",
+  moderate: "Moderate",
+  vigorous: "Vigorous",
+  unknown: "Not recorded",
+};
+
+const BIKE_OR_MACHINE_TYPES = new Set<ExerciseActivityType>([
+  "stationary-bike",
+  "outdoor-cycling",
+  "elliptical",
+]);
+
+const DISTANCE_EXERCISE_TYPES = new Set<ExerciseActivityType>([
+  "stationary-bike",
+  "walking",
+  "outdoor-cycling",
+  "running",
+  "elliptical",
+  "swimming",
+  "other-aerobic",
+]);
+
+const STEP_EXERCISE_TYPES = new Set<ExerciseActivityType>([
+  "walking",
+  "running",
+]);
+
+const STRENGTH_MUSCLE_GROUP_LABELS: Record<StrengthMuscleGroup, string> = {
+  legs: "Legs",
+  hips: "Hips",
+  back: "Back",
+  abdomen: "Abdomen",
+  chest: "Chest",
+  shoulders: "Shoulders",
+  arms: "Arms",
+};
+
+const STRENGTH_RESISTANCE_LABELS: Record<StrengthResistanceType, string> = {
+  bodyweight: "Bodyweight",
+  "free-weight": "Free weight",
+  machine: "Machine",
+  band: "Resistance band",
+  other: "Other",
+};
+
 type MaybePromise = void | Promise<void>;
 
 export interface HealthTrackerProps {
@@ -210,6 +285,7 @@ export interface HealthTrackerProps {
   dietCheckIns: DietCheckIn[];
   waistEntries: WaistEntry[];
   activityCheckIns: ActivityCheckIn[];
+  exerciseSessions: ExerciseSession[];
   profile: HealthProfile;
   settings: HealthSettings;
   now: Date;
@@ -223,6 +299,8 @@ export interface HealthTrackerProps {
   onDeleteWaist: (entryId: string) => MaybePromise;
   onAddActivity: (entry: ActivityCheckIn) => MaybePromise;
   onDeleteActivity: (entryId: string) => MaybePromise;
+  onAddExerciseSession: (session: ExerciseSession) => MaybePromise;
+  onDeleteExerciseSession: (sessionId: string) => MaybePromise;
   onUpdateProfile: (profile: HealthProfile) => MaybePromise;
   onUpdateSettings: (settings: HealthSettings) => MaybePromise;
 }
@@ -2709,26 +2787,835 @@ function WaistForm({
   );
 }
 
+type StrengthExerciseDraft = {
+  id: string;
+  name: string;
+  muscleGroups: StrengthMuscleGroup[];
+  resistanceType: StrengthResistanceType;
+  setCount: string;
+  totalReps: string;
+  loadKg: string;
+};
+
+function createStrengthExerciseDraft(): StrengthExerciseDraft {
+  return {
+    id: makeId("strength-exercise"),
+    name: "",
+    muscleGroups: [],
+    resistanceType: "bodyweight",
+    setCount: "",
+    totalReps: "",
+    loadKg: "",
+  };
+}
+
+function ExerciseSessionForm({
+  now,
+  onAdd,
+  editingSession,
+  onCancelEdit,
+}: {
+  now: Date;
+  onAdd: (session: ExerciseSession) => MaybePromise;
+  editingSession: ExerciseSession | null;
+  onCancelEdit: () => void;
+}) {
+  const [activityType, setActivityType] = useState<ExerciseActivityType>(
+    () => editingSession?.activityType ?? "stationary-bike",
+  );
+  const [customActivityName, setCustomActivityName] = useState(
+    () => editingSession?.customActivityName ?? "",
+  );
+  const [endedAt, setEndedAt] = useState(() =>
+    editingSession
+      ? toDateTimeLocal(new Date(editingSession.endedAt))
+      : toDateTimeLocal(now),
+  );
+  const [endTimeEdited, setEndTimeEdited] = useState(
+    () => Boolean(editingSession),
+  );
+  const endedAtInputId = useId();
+  const [durationMinutes, setDurationMinutes] = useState(() =>
+    editingSession ? String(editingSession.durationMinutes) : "",
+  );
+  const [intensity, setIntensity] = useState<ExerciseIntensity | "">(
+    () => editingSession?.intensity ?? "",
+  );
+  const [perceivedExertion, setPerceivedExertion] = useState(() =>
+    editingSession?.perceivedExertion === undefined
+      ? ""
+      : String(editingSession.perceivedExertion),
+  );
+  const [distanceKm, setDistanceKm] = useState(() =>
+    editingSession?.distanceKm === undefined
+      ? ""
+      : String(editingSession.distanceKm),
+  );
+  const [steps, setSteps] = useState(() =>
+    editingSession?.steps === undefined ? "" : String(editingSession.steps),
+  );
+  const [averageHeartRateBpm, setAverageHeartRateBpm] = useState(() =>
+    editingSession?.averageHeartRateBpm === undefined
+      ? ""
+      : String(editingSession.averageHeartRateBpm),
+  );
+  const [averageCadenceRpm, setAverageCadenceRpm] = useState(() =>
+    editingSession?.averageCadenceRpm === undefined
+      ? ""
+      : String(editingSession.averageCadenceRpm),
+  );
+  const [equipmentName, setEquipmentName] = useState(
+    () => editingSession?.equipmentName ?? "",
+  );
+  const [resistanceLevel, setResistanceLevel] = useState(
+    () => editingSession?.resistanceLevel ?? "",
+  );
+  const [strengthExercises, setStrengthExercises] = useState<
+    StrengthExerciseDraft[]
+  >(() =>
+    editingSession?.activityType === "strength-training"
+      ? editingSession.strengthExercises?.map((exercise) => ({
+          id: exercise.id,
+          name: exercise.name,
+          muscleGroups: exercise.muscleGroups,
+          resistanceType: exercise.resistanceType,
+          setCount: String(exercise.setCount),
+          totalReps:
+            exercise.totalReps === undefined
+              ? ""
+              : String(exercise.totalReps),
+          loadKg:
+            exercise.loadKg === undefined ? "" : String(exercise.loadKg),
+        })) ?? [createStrengthExerciseDraft()]
+      : [],
+  );
+  const [symptoms, setSymptoms] = useState(
+    () => editingSession?.symptoms ?? "",
+  );
+  const [notes, setNotes] = useState(() => editingSession?.notes ?? "");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const isCustomActivity =
+    activityType === "other" || activityType === "other-aerobic";
+  const supportsDistance = DISTANCE_EXERCISE_TYPES.has(activityType);
+  const supportsSteps = STEP_EXERCISE_TYPES.has(activityType);
+  const supportsMachineMetrics = BIKE_OR_MACHINE_TYPES.has(activityType);
+  const isStrength = activityType === "strength-training";
+  const isAerobicActivity = isAerobicExerciseActivityType(activityType);
+  const displayedEndedAt = endTimeEdited ? endedAt : toDateTimeLocal(now);
+
+  function resetForm(nextActivityType = activityType) {
+    setActivityType(nextActivityType);
+    setEndedAt(toDateTimeLocal(new Date()));
+    setEndTimeEdited(false);
+    setCustomActivityName("");
+    setDurationMinutes("");
+    setIntensity("");
+    setPerceivedExertion("");
+    setDistanceKm("");
+    setSteps("");
+    setAverageHeartRateBpm("");
+    setAverageCadenceRpm("");
+    setEquipmentName("");
+    setResistanceLevel("");
+    setStrengthExercises(
+      nextActivityType === "strength-training"
+        ? [createStrengthExerciseDraft()]
+        : [],
+    );
+    setSymptoms("");
+    setNotes("");
+  }
+
+  function focusExerciseFormOnNextFrame() {
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLSelectElement>("#exercise-session-entry select")
+        ?.focus();
+    });
+  }
+
+  function updateStrengthExercise(
+    id: string,
+    update: Partial<StrengthExerciseDraft>,
+  ) {
+    setStrengthExercises((current) =>
+      current.map((exercise) =>
+        exercise.id === id ? { ...exercise, ...update } : exercise,
+      ),
+    );
+  }
+
+  function toggleMuscleGroup(id: string, group: StrengthMuscleGroup) {
+    setStrengthExercises((current) =>
+      current.map((exercise) =>
+        exercise.id !== id
+          ? exercise
+          : {
+              ...exercise,
+              muscleGroups: exercise.muscleGroups.includes(group)
+                ? exercise.muscleGroups.filter((item) => item !== group)
+                : [...exercise.muscleGroups, group],
+            },
+      ),
+    );
+  }
+
+  function changeActivityType(nextType: ExerciseActivityType) {
+    setActivityType(nextType);
+    setMessage("");
+    if (nextType === "strength-training" && strengthExercises.length === 0) {
+      setStrengthExercises([createStrengthExerciseDraft()]);
+    }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    const endIso = toIsoTimestamp(
+      endTimeEdited ? endedAt : toDateTimeLocal(new Date()),
+    );
+    const duration = parseNumber(durationMinutes);
+    const effort = parseNumber(perceivedExertion);
+    const distance = parseNumber(distanceKm);
+    const stepCount = parseNumber(steps);
+    const averageHeartRate = parseNumber(averageHeartRateBpm);
+    const averageCadence = parseNumber(averageCadenceRpm);
+
+    if (!endIso || isFutureTimestamp(endIso, now)) {
+      setMessage("Choose a valid end time that is not in the future.");
+      return;
+    }
+    if (duration === null || duration < 1 || duration > 1_440) {
+      setMessage("Enter 1–1,440 active minutes.");
+      return;
+    }
+    if (!intensity) {
+      setMessage("Choose how intense the session felt.");
+      return;
+    }
+    if (isCustomActivity && !customActivityName.trim()) {
+      setMessage("Name the custom activity so it remains useful in reports.");
+      return;
+    }
+    if (
+      perceivedExertion.trim() &&
+      (effort === null || effort < 0 || effort > 10)
+    ) {
+      setMessage("Use a perceived effort from 0 to 10, or leave it blank.");
+      return;
+    }
+    if (
+      supportsDistance &&
+      distanceKm.trim() &&
+      (distance === null || distance <= 0 || distance > 1_000)
+    ) {
+      setMessage("Use a distance above 0 and up to 1,000 km, or leave it blank.");
+      return;
+    }
+    if (
+      supportsSteps &&
+      steps.trim() &&
+      (stepCount === null ||
+        !Number.isInteger(stepCount) ||
+        stepCount < 1 ||
+        stepCount > 250_000)
+    ) {
+      setMessage("Use a whole-number step count from 1 to 250,000.");
+      return;
+    }
+    if (
+      averageHeartRateBpm.trim() &&
+      (averageHeartRate === null ||
+        !Number.isInteger(averageHeartRate) ||
+        averageHeartRate < 25 ||
+        averageHeartRate > 240)
+    ) {
+      setMessage("Use an average heart rate from 25 to 240 bpm.");
+      return;
+    }
+    if (
+      supportsMachineMetrics &&
+      averageCadenceRpm.trim() &&
+      (averageCadence === null ||
+        !Number.isInteger(averageCadence) ||
+        averageCadence < 1 ||
+        averageCadence > 250)
+    ) {
+      setMessage("Use an average cadence from 1 to 250 rpm.");
+      return;
+    }
+
+    const strengthExerciseLogs: StrengthExerciseLog[] = [];
+    if (isStrength) {
+      for (const exercise of strengthExercises) {
+        const hasAnyDetail =
+          exercise.name.trim() ||
+          exercise.setCount.trim() ||
+          exercise.totalReps.trim() ||
+          exercise.loadKg.trim() ||
+          exercise.muscleGroups.length > 0;
+        if (!hasAnyDetail) continue;
+        const setCount = parseNumber(exercise.setCount);
+        const totalReps = parseNumber(exercise.totalReps);
+        const loadKg = parseNumber(exercise.loadKg);
+        if (!exercise.name.trim()) {
+          setMessage("Name each strength exercise that has details.");
+          return;
+        }
+        if (
+          setCount === null ||
+          !Number.isInteger(setCount) ||
+          setCount < 1 ||
+          setCount > 100
+        ) {
+          setMessage("Use 1–100 sets for each recorded strength exercise.");
+          return;
+        }
+        if (
+          exercise.totalReps.trim() &&
+          (totalReps === null ||
+            !Number.isInteger(totalReps) ||
+            totalReps < 1 ||
+            totalReps > 10_000)
+        ) {
+          setMessage("Use a whole-number total rep count, or leave it blank.");
+          return;
+        }
+        const supportsRecordedLoad =
+          exercise.resistanceType === "free-weight" ||
+          exercise.resistanceType === "machine";
+        if (
+          supportsRecordedLoad &&
+          exercise.loadKg.trim() &&
+          (loadKg === null || loadKg <= 0 || loadKg > 1_000)
+        ) {
+          setMessage("Use a load above 0 and up to 1,000 kg, or leave it blank.");
+          return;
+        }
+        strengthExerciseLogs.push({
+          id: exercise.id,
+          name: exercise.name.trim(),
+          muscleGroups: exercise.muscleGroups,
+          resistanceType: exercise.resistanceType,
+          setCount,
+          ...(totalReps === null ? {} : { totalReps }),
+          ...(loadKg === null || !supportsRecordedLoad
+            ? {}
+            : { loadKg }),
+        });
+      }
+    }
+
+    const savedAt = new Date().toISOString();
+    setSaving(true);
+    try {
+      await onAdd({
+        id: editingSession?.id ?? makeId("exercise-session"),
+        endedAt: endIso,
+        careDayKey: careDayKeyForInstant(endIso),
+        activityType,
+        ...(isCustomActivity
+          ? { customActivityName: customActivityName.trim() }
+          : {}),
+        durationMinutes: duration,
+        intensity,
+        ...(effort === null ? {} : { perceivedExertion: effort }),
+        ...(supportsDistance && distance !== null ? { distanceKm: distance } : {}),
+        ...(supportsSteps && stepCount !== null ? { steps: stepCount } : {}),
+        ...(averageHeartRate === null
+          ? {}
+          : { averageHeartRateBpm: averageHeartRate }),
+        ...(supportsMachineMetrics && averageCadence !== null
+          ? { averageCadenceRpm: averageCadence }
+          : {}),
+        ...(supportsMachineMetrics && equipmentName.trim()
+          ? { equipmentName: equipmentName.trim() }
+          : {}),
+        ...(supportsMachineMetrics && resistanceLevel.trim()
+          ? { resistanceLevel: resistanceLevel.trim() }
+          : {}),
+        ...(strengthExerciseLogs.length
+          ? { strengthExercises: strengthExerciseLogs }
+          : {}),
+        symptoms: symptoms.trim() || undefined,
+        notes: notes.trim() || undefined,
+        createdAt: editingSession?.createdAt ?? savedAt,
+        updatedAt: savedAt,
+      });
+      const wasEditing = Boolean(editingSession);
+      resetForm(activityType);
+      onCancelEdit();
+      if (wasEditing) focusExerciseFormOnNextFrame();
+      setMessage(
+        wasEditing ? "Exercise session updated." : "Exercise session saved.",
+      );
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      id="exercise-session-entry"
+      onSubmit={submit}
+      className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4"
+    >
+      <h3 className="font-semibold text-zinc-950">
+        {editingSession ? "Edit exercise session" : "Log an exercise session"}
+      </h3>
+      <p className="mt-1 text-xs leading-5 text-zinc-600">
+        Type, active duration and relative intensity are the analysis-ready core.
+        Add only the details you actually know; blank does not mean zero.
+      </p>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <label>
+          <span className={LABEL_CLASS}>Activity</span>
+          <select
+            className={INPUT_CLASS}
+            autoFocus={Boolean(editingSession)}
+            value={activityType}
+            onChange={(event) =>
+              changeActivityType(event.target.value as ExerciseActivityType)
+            }
+          >
+            {EXERCISE_ACTIVITY_OPTIONS.map((option) => (
+              <option key={option.id} value={option.id}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <div>
+          <label className={LABEL_CLASS} htmlFor={endedAtInputId}>Ended (Iran time)</label>
+          <div className="flex gap-2">
+            <input
+              id={endedAtInputId}
+              className={INPUT_CLASS}
+              type="datetime-local"
+              required
+              max={toDateTimeLocal(new Date(now.getTime() + 10 * MINUTE_MS))}
+              value={displayedEndedAt}
+              onChange={(event) => {
+                setEndedAt(event.target.value);
+                setEndTimeEdited(true);
+              }}
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-zinc-200 bg-white px-3 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
+              onClick={() => {
+                setEndedAt(toDateTimeLocal(new Date()));
+                setEndTimeEdited(true);
+              }}
+            >
+              Now
+            </button>
+          </div>
+        </div>
+        <label>
+          <span className={LABEL_CLASS}>Active duration (min)</span>
+          <input
+            className={INPUT_CLASS}
+            type="number"
+            inputMode="decimal"
+            min="1"
+            max="1440"
+            step="0.5"
+            required
+            value={durationMinutes}
+            onChange={(event) => setDurationMinutes(event.target.value)}
+          />
+        </label>
+        <label>
+          <span className={LABEL_CLASS}>Relative intensity</span>
+          <select
+            className={INPUT_CLASS}
+            required
+            value={intensity}
+            onChange={(event) =>
+              setIntensity(event.target.value as ExerciseIntensity | "")
+            }
+          >
+            <option value="">Choose…</option>
+            {isAerobicActivity ? (
+              <>
+                <option value="light">Light — easy conversation / singing</option>
+                <option value="moderate">Moderate — talk, but not sing</option>
+                <option value="vigorous">Vigorous — only a few words</option>
+              </>
+            ) : (
+              <>
+                <option value="light">Light — easy effort</option>
+                <option value="moderate">Moderate — clear, sustainable effort</option>
+                <option value="vigorous">Vigorous — hard effort</option>
+              </>
+            )}
+            <option value="unknown">Not sure / not recorded</option>
+          </select>
+        </label>
+      </div>
+
+      {isCustomActivity ? (
+        <label className="mt-3 block">
+          <span className={LABEL_CLASS}>Activity name</span>
+          <input
+            className={INPUT_CLASS}
+            maxLength={100}
+            required
+            value={customActivityName}
+            onChange={(event) => setCustomActivityName(event.target.value)}
+            placeholder="For example: dancing or stair climbing"
+          />
+        </label>
+      ) : null}
+
+      <details className="mt-3 rounded-md border border-zinc-200 bg-white">
+        <summary className="cursor-pointer px-3 py-3 text-sm font-semibold text-zinc-800">
+          Optional details for better analysis
+        </summary>
+        <div className="border-t border-zinc-100 p-3">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <label>
+              <span className={LABEL_CLASS}>Perceived effort (0–10)</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="decimal"
+                min="0"
+                max="10"
+                step="0.5"
+                value={perceivedExertion}
+                onChange={(event) => setPerceivedExertion(event.target.value)}
+                placeholder="Optional"
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Average heart rate (bpm)</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="25"
+                max="240"
+                value={averageHeartRateBpm}
+                onChange={(event) => setAverageHeartRateBpm(event.target.value)}
+                placeholder="Optional"
+              />
+            </label>
+            {supportsDistance ? (
+              <label>
+                <span className={LABEL_CLASS}>Distance (km)</span>
+                <input
+                  className={INPUT_CLASS}
+                  type="number"
+                  inputMode="decimal"
+                  min="0.01"
+                  max="1000"
+                  step="0.01"
+                  value={distanceKm}
+                  onChange={(event) => setDistanceKm(event.target.value)}
+                  placeholder={supportsMachineMetrics ? "Machine / route value" : "Optional"}
+                />
+              </label>
+            ) : null}
+            {supportsSteps ? (
+              <label>
+                <span className={LABEL_CLASS}>Steps during session</span>
+                <input
+                  className={INPUT_CLASS}
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="250000"
+                  step="1"
+                  value={steps}
+                  onChange={(event) => setSteps(event.target.value)}
+                  placeholder="Optional"
+                />
+              </label>
+            ) : null}
+            {supportsMachineMetrics ? (
+              <>
+                <label>
+                  <span className={LABEL_CLASS}>Average cadence (rpm)</span>
+                  <input
+                    className={INPUT_CLASS}
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    max="250"
+                    value={averageCadenceRpm}
+                    onChange={(event) => setAverageCadenceRpm(event.target.value)}
+                    placeholder="Optional"
+                  />
+                </label>
+                <label>
+                  <span className={LABEL_CLASS}>Bike / machine name</span>
+                  <input
+                    className={INPUT_CLASS}
+                    maxLength={100}
+                    value={equipmentName}
+                    onChange={(event) => setEquipmentName(event.target.value)}
+                    placeholder="Helps compare like with like"
+                  />
+                </label>
+                <label>
+                  <span className={LABEL_CLASS}>Resistance / level</span>
+                  <input
+                    className={INPUT_CLASS}
+                    maxLength={60}
+                    value={resistanceLevel}
+                    onChange={(event) => setResistanceLevel(event.target.value)}
+                    placeholder="Machine-specific value"
+                  />
+                </label>
+              </>
+            ) : null}
+          </div>
+
+          {isStrength ? (
+            <div className="mt-4 border-t border-zinc-100 pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-semibold text-zinc-900">Strength exercises</h4>
+                  <p className="mt-0.5 text-xs text-zinc-500">
+                    Optional. Record actual work; do not enter missing load as zero.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
+                  disabled={strengthExercises.length >= 50}
+                  onClick={() =>
+                    setStrengthExercises((current) => [
+                      ...current,
+                      createStrengthExerciseDraft(),
+                    ])
+                  }
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  {strengthExercises.length >= 50 ? "50-exercise limit" : "Add exercise"}
+                </button>
+              </div>
+              <div className="mt-3 space-y-3">
+                {strengthExercises.map((exercise, index) => (
+                  <div key={exercise.id} className="rounded-md border border-zinc-200 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-zinc-800">Exercise {index + 1}</p>
+                      <button
+                        type="button"
+                        className="flex h-10 w-10 items-center justify-center rounded-md text-zinc-500 hover:bg-rose-50 hover:text-rose-700"
+                        aria-label={`Remove strength exercise ${index + 1}`}
+                        onClick={() =>
+                          setStrengthExercises((current) =>
+                            current.filter((item) => item.id !== exercise.id),
+                          )
+                        }
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                      <label className="xl:col-span-2">
+                        <span className={LABEL_CLASS}>Exercise name</span>
+                        <input
+                          className={INPUT_CLASS}
+                          maxLength={100}
+                          value={exercise.name}
+                          onChange={(event) =>
+                            updateStrengthExercise(exercise.id, { name: event.target.value })
+                          }
+                          placeholder="For example: chair squat"
+                        />
+                      </label>
+                      <label>
+                        <span className={LABEL_CLASS}>Resistance</span>
+                        <select
+                          className={INPUT_CLASS}
+                          value={exercise.resistanceType}
+                          onChange={(event) =>
+                            updateStrengthExercise(exercise.id, {
+                              resistanceType: event.target.value as StrengthResistanceType,
+                              ...(
+                                event.target.value === "free-weight" ||
+                                event.target.value === "machine"
+                                  ? {}
+                                  : { loadKg: "" }
+                              ),
+                            })
+                          }
+                        >
+                          {Object.entries(STRENGTH_RESISTANCE_LABELS).map(([id, label]) => (
+                            <option key={id} value={id}>{label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span className={LABEL_CLASS}>Sets</span>
+                        <input
+                          className={INPUT_CLASS}
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          max="100"
+                          step="1"
+                          value={exercise.setCount}
+                          onChange={(event) =>
+                            updateStrengthExercise(exercise.id, { setCount: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span className={LABEL_CLASS}>Total reps</span>
+                        <input
+                          className={INPUT_CLASS}
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          max="10000"
+                          step="1"
+                          value={exercise.totalReps}
+                          onChange={(event) =>
+                            updateStrengthExercise(exercise.id, { totalReps: event.target.value })
+                          }
+                          placeholder="Optional"
+                        />
+                      </label>
+                      {exercise.resistanceType === "free-weight" ||
+                      exercise.resistanceType === "machine" ? (
+                        <label>
+                          <span className={LABEL_CLASS}>Load (kg)</span>
+                          <input
+                            className={INPUT_CLASS}
+                            type="number"
+                            inputMode="decimal"
+                            min="0.1"
+                            max="1000"
+                            step="0.1"
+                            value={exercise.loadKg}
+                            onChange={(event) =>
+                              updateStrengthExercise(exercise.id, { loadKg: event.target.value })
+                            }
+                            placeholder="Optional"
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                    <fieldset className="mt-3">
+                      <legend className={LABEL_CLASS}>Major muscle groups (optional)</legend>
+                      <div className="flex flex-wrap gap-2">
+                        {(Object.entries(STRENGTH_MUSCLE_GROUP_LABELS) as Array<[
+                          StrengthMuscleGroup,
+                          string,
+                        ]>).map(([group, label]) => (
+                          <label key={group} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700">
+                            <input
+                              type="checkbox"
+                              checked={exercise.muscleGroups.includes(group)}
+                              onChange={() => toggleMuscleGroup(exercise.id, group)}
+                              className="h-4 w-4 accent-emerald-600"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className={LABEL_CLASS}>Symptoms / pain (optional)</span>
+              <input
+                className={INPUT_CLASS}
+                maxLength={500}
+                value={symptoms}
+                onChange={(event) => setSymptoms(event.target.value)}
+                placeholder="What happened and when"
+              />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Session note (optional)</span>
+              <input
+                className={INPUT_CLASS}
+                maxLength={500}
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="Route, intervals, conditions, or anything useful later"
+              />
+            </label>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-zinc-500">
+            Heart rate and machine distance are context, not universal truth. Medicines can
+            change heart-rate response, and machine levels are most comparable on the same device.
+          </p>
+        </div>
+      </details>
+
+      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+        <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
+          <Activity className="h-4 w-4" aria-hidden="true" />
+          {saving
+            ? "Saving…"
+            : editingSession
+              ? "Update exercise session"
+              : "Save exercise session"}
+        </button>
+        {editingSession ? (
+          <button
+            type="button"
+            className="inline-flex min-h-11 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 hover:bg-zinc-50"
+            onClick={() => {
+              onCancelEdit();
+              resetForm("stationary-bike");
+              setMessage("");
+              focusExerciseFormOnNextFrame();
+            }}
+          >
+            Cancel edit
+          </button>
+        ) : null}
+        <p
+          className={`text-sm ${message.includes("saved") || message.includes("updated") ? "text-emerald-700" : "text-rose-700"}`}
+          aria-live="polite"
+        >
+          {message}
+        </p>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-zinc-500">
+        Stop and seek urgent medical help for chest pain, fainting, or severe unexplained
+        breathlessness. This log records what happened; it does not set a safe exercise dose.
+      </p>
+    </form>
+  );
+}
+
 function ActivityForm({
   onAdd,
 }: {
   onAdd: (entry: ActivityCheckIn) => MaybePromise;
 }) {
-  const [movementMinutes, setMovementMinutes] = useState("");
-  const [strengthSessions, setStrengthSessions] = useState("");
   const [sedentaryHours, setSedentaryHours] = useState("");
   const [conditioning, setConditioning] = useState<"better" | "same" | "worse">("same");
   const [symptoms, setSymptoms] = useState("");
+  const [notes, setNotes] = useState("");
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const movement = parseNumber(movementMinutes);
-    const strength = parseNumber(strengthSessions);
     const sedentary = parseNumber(sedentaryHours);
-    if ((movement !== null && (movement < 0 || movement > 10080)) || (strength !== null && (strength < 0 || strength > 7)) || (sedentary !== null && (sedentary < 0 || sedentary > 24))) {
-      setMessage("Check the weekly minutes, 0–7 strength sessions, and 0–24 sedentary hours/day.");
+    if (
+      sedentaryHours.trim() &&
+      (sedentary === null || sedentary < 0 || sedentary > 24)
+    ) {
+      setMessage("Use 0–24 sedentary hours per day, or leave it blank.");
       return;
     }
     const savedAt = new Date().toISOString();
@@ -2738,14 +3625,16 @@ function ActivityForm({
         id: makeId("activity"),
         measuredAt: savedAt,
         careDayKey: careDayKeyForInstant(savedAt),
-        movementMinutes: movement ?? undefined,
-        strengthSessions: strength === null ? undefined : Math.round(strength),
         sedentaryHoursPerDay: sedentary ?? undefined,
         perceivedConditioning: conditioning,
         symptoms: symptoms.trim() || undefined,
+        notes: notes.trim() || undefined,
         createdAt: savedAt,
         updatedAt: savedAt,
       });
+      setSedentaryHours("");
+      setSymptoms("");
+      setNotes("");
       setMessage("Weekly activity review saved.");
     } catch (error) {
       setMessage(errorText(error));
@@ -2757,14 +3646,13 @@ function ActivityForm({
   return (
     <form id="activity-entry" onSubmit={submit} className="scroll-mt-4 rounded-lg bg-zinc-50 p-3 sm:p-4">
       <h3 className="font-semibold text-zinc-950">Weekly movement & strength review</h3>
-      <p className="mt-1 text-xs leading-5 text-zinc-600">This records your current baseline; it does not prescribe an exercise dose. Increase activity gradually with your clinician if symptoms or pressure readings make exercise safety uncertain.</p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <label><span className={LABEL_CLASS}>Movement min/week</span><input className={INPUT_CLASS} type="number" inputMode="numeric" min="0" max="10080" value={movementMinutes} onChange={(event) => setMovementMinutes(event.target.value)} /></label>
-        <label><span className={LABEL_CLASS}>Strength sessions</span><input className={INPUT_CLASS} type="number" inputMode="numeric" min="0" max="7" value={strengthSessions} onChange={(event) => setStrengthSessions(event.target.value)} /></label>
+      <p className="mt-1 text-xs leading-5 text-zinc-600">Session minutes and strength days are calculated above from the raw log. This review captures sitting, conditioning, symptoms and barriers without creating a second source of truth.</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label><span className={LABEL_CLASS}>Sitting hours/day</span><input className={INPUT_CLASS} type="number" inputMode="decimal" min="0" max="24" step="0.5" value={sedentaryHours} onChange={(event) => setSedentaryHours(event.target.value)} /></label>
         <label><span className={LABEL_CLASS}>Conditioning feels</span><select className={INPUT_CLASS} value={conditioning} onChange={(event) => setConditioning(event.target.value as "better" | "same" | "worse")}><option value="better">Better</option><option value="same">Same</option><option value="worse">Worse</option></select></label>
       </div>
       <label className="mt-3 block"><span className={LABEL_CLASS}>Symptoms / limitation (optional)</span><input className={INPUT_CLASS} maxLength={500} value={symptoms} onChange={(event) => setSymptoms(event.target.value)} placeholder="Pain, breathlessness, dizziness, or other limitation" /></label>
+      <label className="mt-3 block"><span className={LABEL_CLASS}>Weekly note (optional)</span><input className={INPUT_CLASS} maxLength={500} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Changes in routine, barriers, or recovery" /></label>
       <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center"><button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}><Dumbbell className="h-4 w-4" aria-hidden="true" />{saving ? "Saving…" : "Save weekly review"}</button><p className={`text-sm ${message.includes("saved") ? "text-emerald-700" : "text-rose-700"}`} aria-live="polite">{message}</p></div>
     </form>
   );
@@ -3333,6 +4221,7 @@ export function HealthTracker({
   dietCheckIns,
   waistEntries,
   activityCheckIns,
+  exerciseSessions,
   profile,
   settings,
   now,
@@ -3346,9 +4235,14 @@ export function HealthTracker({
   onDeleteWaist,
   onAddActivity,
   onDeleteActivity,
+  onAddExerciseSession,
+  onDeleteExerciseSession,
   onUpdateProfile,
   onUpdateSettings,
 }: HealthTrackerProps) {
+  const [showAllExerciseSessions, setShowAllExerciseSessions] = useState(false);
+  const [editingExerciseSession, setEditingExerciseSession] =
+    useState<ExerciseSession | null>(null);
   const validNow = Number.isFinite(now.getTime()) ? now : new Date(0);
   const todayKey = careDayKey;
   const cycleActive = isInCycle(todayKey, settings);
@@ -3363,6 +4257,17 @@ export function HealthTracker({
     () => sortByMeasuredAt(activityCheckIns),
     [activityCheckIns],
   );
+  const sortedExerciseSessions = useMemo(
+    () =>
+      [...exerciseSessions].sort(
+        (first, second) =>
+          Date.parse(first.endedAt) - Date.parse(second.endedAt),
+      ),
+    [exerciseSessions],
+  );
+  const visibleExerciseSessions = showAllExerciseSessions
+    ? sortedExerciseSessions
+    : sortedExerciseSessions.slice(-8);
 
   const latestWeight = sortedWeights.at(-1);
   const currentWeight = latestWeight?.weightKg ?? settings.baselineWeightKg;
@@ -3499,6 +4404,33 @@ export function HealthTracker({
   ).length;
   const offPlanDays = weeklyDiet.filter((entry) => entry.adherence === "off-plan").length;
   const sodiumAwareDays = weeklyDiet.filter((entry) => entry.sodiumAware).length;
+
+  const exerciseSummary = summarizeExerciseSessions(
+    sortedExerciseSessions,
+    lastSevenDayKeys,
+  );
+  const sevenDayExerciseSessions = exerciseSummary.sessions;
+  const sevenDayExerciseMinutes = exerciseSummary.totalMinutes;
+  const moderateEquivalentMinutes =
+    exerciseSummary.moderateEquivalentMinutes;
+  const strengthDayCount = exerciseSummary.strengthDayCount;
+  const exerciseMinutesByType = Array.from(
+    sevenDayExerciseSessions.reduce((minutesByType, session) => {
+      const label =
+        session.customActivityName?.trim() ||
+        EXERCISE_ACTIVITY_LABELS[session.activityType];
+      minutesByType.set(
+        label,
+        (minutesByType.get(label) ?? 0) + session.durationMinutes,
+      );
+      return minutesByType;
+    }, new Map<string, number>()),
+  ).sort((first, second) => second[1] - first[1]);
+  const generalAerobicReferenceProgress = clamp(
+    (moderateEquivalentMinutes / 150) * 100,
+    0,
+    100,
+  );
 
   const todayWeights = sortedWeights.filter(
     (entry) => entryCareDayKey(entry) === todayKey,
@@ -4340,20 +5272,199 @@ export function HealthTracker({
         <SectionHeading
           icon={<Dumbbell className="h-5 w-5" aria-hidden="true" />}
           title="Movement & strength"
-          description="A weekly baseline review for prolonged sitting and self-reported deconditioning."
+          description="Log each real session in a structured form, then review rolling activity patterns without losing the separate weekly baseline review."
         />
         <span id="activity-section-title" className="sr-only">Movement and strength</span>
-        <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-          <ActivityForm onAdd={onAddActivity} />
-          <div className="rounded-lg border border-zinc-200 p-3">
-            <h3 className="font-semibold text-zinc-900">Weekly reviews</h3>
-            <div className="mt-2 space-y-2">
-              {sortedActivity.length ? sortedActivity.slice(-5).reverse().map((entry) => (
-                <div key={entry.id} className="flex items-start justify-between gap-2 rounded-md bg-zinc-50 p-2.5">
-                  <div><p className="text-sm font-semibold">{entry.movementMinutes ?? "—"} min · {entry.strengthSessions ?? "—"} strength</p><p className="text-xs text-zinc-500">{formatDateTime(entry.measuredAt)} · {entry.perceivedConditioning ?? "not rated"}</p></div>
-                  <DeleteButton label="Delete activity review" onDelete={() => confirmDelete("this activity review", () => onDeleteActivity(entry.id))} />
-                </div>
-              )) : <p className="text-sm text-zinc-500">No weekly reviews yet.</p>}
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-md bg-zinc-50 p-3">
+            <p className="text-xs font-medium text-zinc-500">Sessions · 7 Care Days</p>
+            <p className="mt-1 text-xl font-semibold text-zinc-950">{sevenDayExerciseSessions.length}</p>
+            <p className="text-xs text-zinc-500">Each logged workout</p>
+          </div>
+          <div className="rounded-md bg-emerald-50 p-3">
+            <p className="text-xs font-medium text-emerald-700">All active minutes</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-950">{sevenDayExerciseMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}</p>
+            <p className="text-xs text-emerald-700">Includes light and mobility</p>
+          </div>
+          <div className="rounded-md bg-sky-50 p-3">
+            <p className="text-xs font-medium text-sky-700">Moderate-equivalent</p>
+            <p className="mt-1 text-xl font-semibold text-sky-950">{moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}</p>
+            <p className="text-xs text-sky-700">Aerobic min · vigorous ×2</p>
+          </div>
+          <div className="rounded-md bg-violet-50 p-3">
+            <p className="text-xs font-medium text-violet-700">Strength days</p>
+            <p className="mt-1 text-xl font-semibold text-violet-950">{strengthDayCount}</p>
+            <p className="text-xs text-violet-700">Distinct Tehran dates</p>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-md border border-zinc-200 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="font-semibold text-zinc-800">General adult aerobic reference</span>
+            <span className="font-semibold text-emerald-700">{moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} / 150 min</span>
+          </div>
+          <div
+            className="mt-2 h-2.5 overflow-hidden rounded-full bg-zinc-100"
+            role="progressbar"
+            aria-label="Progress toward the general 150-minute adult aerobic reference"
+            aria-valuemin={0}
+            aria-valuemax={150}
+            aria-valuenow={Math.min(150, Math.round(moderateEquivalentMinutes))}
+          >
+            <div className="h-full rounded-full bg-emerald-600" style={{ width: `${generalAerobicReferenceProgress}%` }} />
+          </div>
+          <p className="mt-2 text-xs leading-5 text-zinc-500">
+            This is a general-population reference, not a personalized starting dose. Light activity remains visible in total minutes; strength and mobility are not misclassified as aerobic minutes.
+          </p>
+          {exerciseMinutesByType.length ? (
+            <div className="mt-3 flex flex-wrap gap-2" aria-label="Minutes by activity type">
+              {exerciseMinutesByType.map(([label, minutes]) => (
+                <span key={label} className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700">
+                  {label} · {minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-4">
+          <ExerciseSessionForm
+            key={editingExerciseSession?.id ?? "new-exercise-session"}
+            now={validNow}
+            onAdd={onAddExerciseSession}
+            editingSession={editingExerciseSession}
+            onCancelEdit={() => setEditingExerciseSession(null)}
+          />
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-200 p-3 sm:p-4">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="font-semibold text-zinc-900">Recent exercise sessions</h3>
+              <p className="mt-0.5 text-xs text-zinc-500">Raw sessions stay separate so future trends can be recomputed accurately.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              {sortedExerciseSessions.length > 8 ? (
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+                  onClick={() => setShowAllExerciseSessions((current) => !current)}
+                >
+                  {showAllExerciseSessions
+                    ? "Show newest 8"
+                    : `Show all ${sortedExerciseSessions.length}`}
+                </button>
+              ) : null}
+              <span className="text-xs text-zinc-500">Newest first</span>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {sortedExerciseSessions.length ? (
+              [...visibleExerciseSessions].reverse().map((session) => {
+                const label = session.customActivityName?.trim() || EXERCISE_ACTIVITY_LABELS[session.activityType];
+                const exerciseCount = session.strengthExercises?.length ?? 0;
+                const setCount = session.strengthExercises?.reduce((total, exercise) => total + exercise.setCount, 0) ?? 0;
+                return (
+                  <article key={session.id} className="rounded-md bg-zinc-50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-zinc-950">{label}</p>
+                        <p className="mt-0.5 text-sm text-zinc-700">{session.durationMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min · {EXERCISE_INTENSITY_LABELS[session.intensity]}</p>
+                        <p className="mt-0.5 text-xs text-zinc-500">Ended {formatDateTime(session.endedAt)} · Care Day {session.careDayKey ?? careDayKeyForInstant(session.endedAt)}</p>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        <button
+                          type="button"
+                          className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-200 text-zinc-500 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                          aria-label={`Edit ${label} session`}
+                          onClick={() => {
+                            setEditingExerciseSession(session);
+                            window.requestAnimationFrame(() =>
+                              document
+                                .getElementById("exercise-session-entry")
+                                ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                            );
+                          }}
+                        >
+                          <Edit3 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                        <DeleteButton
+                          label={`Delete ${label} session`}
+                          onDelete={() =>
+                            confirmDelete("this exercise session", async () => {
+                              await onDeleteExerciseSession(session.id);
+                              if (editingExerciseSession?.id === session.id) {
+                                setEditingExerciseSession(null);
+                              }
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5 text-xs text-zinc-700">
+                      {session.perceivedExertion === undefined ? null : <span className="rounded-full bg-white px-2 py-1">Perceived effort {session.perceivedExertion}/10</span>}
+                      {session.distanceKm === undefined ? null : <span className="rounded-full bg-white px-2 py-1">{session.distanceKm.toLocaleString(undefined, { maximumFractionDigits: 2 })} km</span>}
+                      {session.steps === undefined ? null : <span className="rounded-full bg-white px-2 py-1">{session.steps.toLocaleString()} steps</span>}
+                      {session.averageHeartRateBpm === undefined ? null : <span className="rounded-full bg-white px-2 py-1">Avg HR {session.averageHeartRateBpm} bpm</span>}
+                      {session.averageCadenceRpm === undefined ? null : <span className="rounded-full bg-white px-2 py-1">Avg {session.averageCadenceRpm} rpm</span>}
+                      {session.equipmentName ? <span className="rounded-full bg-white px-2 py-1">{session.equipmentName}</span> : null}
+                      {session.resistanceLevel ? <span className="rounded-full bg-white px-2 py-1">Level {session.resistanceLevel}</span> : null}
+                      {exerciseCount ? <span className="rounded-full bg-white px-2 py-1">{exerciseCount} exercise{exerciseCount === 1 ? "" : "s"} · {setCount} sets</span> : null}
+                    </div>
+                    {session.strengthExercises?.length ? (
+                      <details className="mt-2 rounded-md border border-zinc-200 bg-white text-xs">
+                        <summary className="cursor-pointer px-2.5 py-2 font-semibold text-zinc-700">Strength details</summary>
+                        <ul className="space-y-1.5 border-t border-zinc-100 px-2.5 py-2 text-zinc-600">
+                          {session.strengthExercises.map((exercise) => (
+                            <li key={exercise.id}>
+                              <strong className="text-zinc-800">{exercise.name}</strong>: {exercise.setCount} sets
+                              {` · ${STRENGTH_RESISTANCE_LABELS[exercise.resistanceType]}`}
+                              {exercise.totalReps === undefined ? "" : ` · ${exercise.totalReps} total reps`}
+                              {exercise.loadKg === undefined ? "" : ` · ${exercise.loadKg} kg`}
+                              {exercise.muscleGroups.length ? ` · ${exercise.muscleGroups.map((group) => STRENGTH_MUSCLE_GROUP_LABELS[group]).join(", ")}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                    {session.symptoms ? <p className="mt-2 break-words text-xs text-amber-900"><strong>Symptoms:</strong> {session.symptoms}</p> : null}
+                    {session.notes ? <p className="mt-1 break-words text-xs text-zinc-600"><strong>Note:</strong> {session.notes}</p> : null}
+                  </article>
+                );
+              })
+            ) : (
+              <p className="text-sm text-zinc-500 lg:col-span-2">No structured exercise sessions yet. Your first bike ride or walk will appear here.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6 border-t border-zinc-200 pt-5">
+          <div className="mb-3">
+            <h3 className="font-semibold text-zinc-950">Weekly baseline review</h3>
+            <p className="mt-0.5 text-xs leading-5 text-zinc-500">This reflection tracks sitting, conditioning and barriers. It does not duplicate or replace individual session logs.</p>
+          </div>
+          <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+            <ActivityForm onAdd={onAddActivity} />
+            <div className="rounded-lg border border-zinc-200 p-3">
+              <h3 className="font-semibold text-zinc-900">Weekly reviews</h3>
+              <div className="mt-2 space-y-2">
+                {sortedActivity.length ? sortedActivity.slice(-5).reverse().map((entry) => (
+                  <div key={entry.id} className="flex items-start justify-between gap-2 rounded-md bg-zinc-50 p-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">
+                        {entry.movementMinutes !== undefined || entry.strengthSessions !== undefined
+                          ? `${entry.movementMinutes ?? "—"} min · ${entry.strengthSessions ?? "—"} strength`
+                          : `Conditioning: ${entry.perceivedConditioning ?? "not rated"}`}
+                      </p>
+                      <p className="text-xs text-zinc-500">{formatDateTime(entry.measuredAt)}{entry.movementMinutes !== undefined || entry.strengthSessions !== undefined ? ` · ${entry.perceivedConditioning ?? "not rated"}` : ""}{entry.sedentaryHoursPerDay === undefined ? "" : ` · ${entry.sedentaryHoursPerDay} sitting hrs/day`}</p>
+                      {entry.symptoms ? <p className="mt-1 break-words text-xs text-amber-900"><strong>Limitation:</strong> {entry.symptoms}</p> : null}
+                      {entry.notes ? <p className="mt-1 break-words text-xs text-zinc-600"><strong>Note:</strong> {entry.notes}</p> : null}
+                    </div>
+                    <DeleteButton label="Delete activity review" onDelete={() => confirmDelete("this activity review", () => onDeleteActivity(entry.id))} />
+                  </div>
+                )) : <p className="text-sm text-zinc-500">No weekly reviews yet.</p>}
+              </div>
             </div>
           </div>
         </div>

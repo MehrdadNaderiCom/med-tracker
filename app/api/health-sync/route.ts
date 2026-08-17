@@ -19,6 +19,7 @@ type DeletedEntryIds = {
   dietCheckInIds: string[];
   waistEntryIds: string[];
   activityCheckInIds: string[];
+  exerciseSessionIds: string[];
 };
 
 type HealthSyncData = {
@@ -28,6 +29,7 @@ type HealthSyncData = {
   dietCheckIns: JsonRecord[];
   waistEntries: JsonRecord[];
   activityCheckIns: JsonRecord[];
+  exerciseSessions: JsonRecord[];
   deletedEntryIds: DeletedEntryIds;
   profile?: unknown;
   profileUpdatedAt?: string;
@@ -194,6 +196,7 @@ function normalizeDeletedEntryIds(value: unknown): DeletedEntryIds {
     dietCheckInIds: normalizeIdList(deletedEntryIds.dietCheckInIds),
     waistEntryIds: normalizeIdList(deletedEntryIds.waistEntryIds),
     activityCheckInIds: normalizeIdList(deletedEntryIds.activityCheckInIds),
+    exerciseSessionIds: normalizeIdList(deletedEntryIds.exerciseSessionIds),
   };
 }
 
@@ -217,6 +220,7 @@ function normalizeHealthSyncData(value: unknown): NormalizedHealthSyncData {
     dietCheckIns: normalizeEntries(data.dietCheckIns),
     waistEntries: normalizeEntries(data.waistEntries),
     activityCheckIns: normalizeEntries(data.activityCheckIns),
+    exerciseSessions: normalizeEntries(data.exerciseSessions),
     deletedEntryIds: normalizeDeletedEntryIds(data.deletedEntryIds),
     profile: "profile" in data ? data.profile : {},
     profileUpdatedAt: normalizeTimestamp(
@@ -294,6 +298,12 @@ function mergeDeletedEntryIds(
         ...incoming.activityCheckInIds,
       ]),
     ),
+    exerciseSessionIds: Array.from(
+      new Set([
+        ...existing.exerciseSessionIds,
+        ...incoming.exerciseSessionIds,
+      ]),
+    ),
   };
 }
 
@@ -365,6 +375,11 @@ function mergeHealthSyncData(
       existing.activityCheckIns,
       incoming.activityCheckIns,
       new Set(deletedEntryIds.activityCheckInIds),
+    ),
+    exerciseSessions: mergeEntries(
+      existing.exerciseSessions,
+      incoming.exerciseSessions,
+      new Set(deletedEntryIds.exerciseSessionIds),
     ),
     deletedEntryIds,
     // Profile is an independent last-write-wins document. Older payloads that

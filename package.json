@@ -10,6 +10,7 @@
     "test:sync": "node --test scripts/primary-sync-merge.test.mjs",
     "test:health": "node --test scripts/health-schedule.test.mjs",
     "test:health-data": "node --test scripts/health-data.test.mjs",
+    "test:health-sync": "node --test scripts/health-sync-merge.test.mjs",
     "test:timezone": "node --test scripts/tehran-time.test.mjs"
   },
   "dependencies": {

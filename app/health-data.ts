@@ -12,10 +12,16 @@ import type {
   BloodPressureSymptom,
   DietAdherence,
   DietCheckIn,
+  ExerciseActivityType,
+  ExerciseIntensity,
+  ExerciseSession,
   HealthDeletionTombstones,
   HealthProfile,
   HealthSettings,
   PerceivedConditioning,
+  StrengthExerciseLog,
+  StrengthMuscleGroup,
+  StrengthResistanceType,
   WaistEntry,
   WaistMeasurementMethod,
   WeightEntry,
@@ -28,6 +34,7 @@ export type HealthSyncData = {
   dietCheckIns: DietCheckIn[];
   waistEntries: WaistEntry[];
   activityCheckIns: ActivityCheckIn[];
+  exerciseSessions: ExerciseSession[];
   deletedEntryIds: HealthDeletionTombstones;
   profile: HealthProfile;
   profileUpdatedAt: string;
@@ -36,7 +43,7 @@ export type HealthSyncData = {
   updatedAt: string;
 };
 
-export const HEALTH_SCHEMA_VERSION = 4;
+export const HEALTH_SCHEMA_VERSION = 5;
 export const BASELINE_WEIGHT_ENTRY_ID = "weight-baseline-2026-08-13-93-6";
 export const BASELINE_WAIST_ENTRY_ID = "waist-baseline-2026-08-13-115";
 
@@ -122,6 +129,60 @@ const BP_SYMPTOMS = new Set<BloodPressureSymptom>([
   "palpitations",
 ]);
 
+const EXERCISE_ACTIVITY_TYPES = new Set<ExerciseActivityType>([
+  "stationary-bike",
+  "walking",
+  "outdoor-cycling",
+  "running",
+  "elliptical",
+  "swimming",
+  "strength-training",
+  "mobility",
+  "other-aerobic",
+  "other",
+]);
+
+const AEROBIC_EXERCISE_ACTIVITY_TYPES = new Set<ExerciseActivityType>([
+  "stationary-bike",
+  "walking",
+  "outdoor-cycling",
+  "running",
+  "elliptical",
+  "swimming",
+  "other-aerobic",
+]);
+
+export function isAerobicExerciseActivityType(
+  activityType: ExerciseActivityType,
+) {
+  return AEROBIC_EXERCISE_ACTIVITY_TYPES.has(activityType);
+}
+
+const EXERCISE_INTENSITIES = new Set<ExerciseIntensity>([
+  "light",
+  "moderate",
+  "vigorous",
+  "unknown",
+]);
+
+const STRENGTH_MUSCLE_GROUPS = new Set<StrengthMuscleGroup>([
+  "legs",
+  "hips",
+  "back",
+  "abdomen",
+  "chest",
+  "shoulders",
+  "arms",
+]);
+
+const STRENGTH_RESISTANCE_TYPES = new Set<StrengthResistanceType>([
+  "bodyweight",
+  "free-weight",
+  "machine",
+  "band",
+  "other",
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -133,6 +194,11 @@ function finiteNumber(value: unknown, minimum: number, maximum: number) {
     value <= maximum
     ? value
     : null;
+}
+
+function finiteInteger(value: unknown, minimum: number, maximum: number) {
+  const number = finiteNumber(value, minimum, maximum);
+  return number !== null && Number.isInteger(number) ? number : null;
 }
 
 function validIso(value: unknown) {
@@ -173,6 +239,67 @@ export function getHealthCareDayKey(value: string | Date): string | null {
   const dateKey = `${valueOf("year")}-${valueOf("month")}-${valueOf("day")}`;
   const hour = Number(valueOf("hour"));
   return hour < 12 ? previousDateKey(dateKey) : dateKey;
+}
+
+function getTehranCalendarDateKey(value: string) {
+  const instant = new Date(value);
+  if (!Number.isFinite(instant.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone: "Asia/Tehran",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(instant);
+  const valueOf = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${valueOf("year")}-${valueOf("month")}-${valueOf("day")}`;
+}
+
+export type ExercisePeriodSummary = {
+  sessions: ExerciseSession[];
+  totalMinutes: number;
+  moderateAerobicMinutes: number;
+  vigorousAerobicMinutes: number;
+  moderateEquivalentMinutes: number;
+  strengthDayCount: number;
+};
+
+/** Derives report metrics from raw sessions; no aggregate is persisted. */
+export function summarizeExerciseSessions(
+  sessions: readonly ExerciseSession[],
+  careDayKeys: readonly string[],
+): ExercisePeriodSummary {
+  const includedCareDays = new Set(careDayKeys);
+  const includedSessions = sessions.filter((session) => {
+    const key = session.careDayKey ?? getHealthCareDayKey(session.endedAt);
+    return key ? includedCareDays.has(key) : false;
+  });
+  const aerobicSessions = includedSessions.filter((session) =>
+    AEROBIC_EXERCISE_ACTIVITY_TYPES.has(session.activityType),
+  );
+  const moderateAerobicMinutes = aerobicSessions
+    .filter((session) => session.intensity === "moderate")
+    .reduce((total, session) => total + session.durationMinutes, 0);
+  const vigorousAerobicMinutes = aerobicSessions
+    .filter((session) => session.intensity === "vigorous")
+    .reduce((total, session) => total + session.durationMinutes, 0);
+  const strengthDates = includedSessions
+    .filter((session) => session.activityType === "strength-training")
+    .map((session) => getTehranCalendarDateKey(session.endedAt))
+    .filter((key): key is string => Boolean(key));
+
+  return {
+    sessions: includedSessions,
+    totalMinutes: includedSessions.reduce(
+      (total, session) => total + session.durationMinutes,
+      0,
+    ),
+    moderateAerobicMinutes,
+    vigorousAerobicMinutes,
+    moderateEquivalentMinutes:
+      moderateAerobicMinutes + vigorousAerobicMinutes * 2,
+    strengthDayCount: new Set(strengthDates).size,
+  };
 }
 
 function normalizeCareDayKey(value: unknown, measuredAt: string) {
@@ -465,6 +592,123 @@ function normalizeActivityCheckIn(value: unknown): ActivityCheckIn | null {
   };
 }
 
+function normalizeStrengthExercise(value: unknown): StrengthExerciseLog | null {
+  if (!isRecord(value)) return null;
+  const name = normalizeShortText(value.name, 100);
+  const setCount = finiteInteger(value.setCount, 1, 100);
+  if (typeof value.id !== "string" || !value.id || !name || setCount === null) {
+    return null;
+  }
+  const resistanceType = STRENGTH_RESISTANCE_TYPES.has(
+    value.resistanceType as StrengthResistanceType,
+  )
+    ? (value.resistanceType as StrengthResistanceType)
+    : "other";
+  const totalReps = finiteInteger(value.totalReps, 1, 10_000);
+  const loadKg = finiteNumber(value.loadKg, 0.1, 1_000);
+
+  return {
+    id: value.id,
+    name,
+    muscleGroups: normalizeStringSet(
+      value.muscleGroups,
+      STRENGTH_MUSCLE_GROUPS,
+    ),
+    resistanceType,
+    setCount,
+    ...(totalReps === null ? {} : { totalReps }),
+    ...(loadKg === null ? {} : { loadKg }),
+  };
+}
+
+function normalizeExerciseSession(value: unknown): ExerciseSession | null {
+  if (!isRecord(value)) return null;
+  const activityType = EXERCISE_ACTIVITY_TYPES.has(
+    value.activityType as ExerciseActivityType,
+  )
+    ? (value.activityType as ExerciseActivityType)
+    : null;
+  const intensity = EXERCISE_INTENSITIES.has(
+    value.intensity as ExerciseIntensity,
+  )
+    ? (value.intensity as ExerciseIntensity)
+    : null;
+  const durationMinutes = finiteNumber(value.durationMinutes, 1, 1_440);
+  if (
+    typeof value.id !== "string" ||
+    !value.id ||
+    !activityType ||
+    !intensity ||
+    durationMinutes === null ||
+    !validIso(value.endedAt) ||
+    !validIso(value.createdAt) ||
+    !validIso(value.updatedAt)
+  ) {
+    return null;
+  }
+
+  const perceivedExertion = finiteNumber(value.perceivedExertion, 0, 10);
+  const distanceKm = finiteNumber(value.distanceKm, 0.01, 1_000);
+  const steps = finiteInteger(value.steps, 1, 250_000);
+  const averageHeartRateBpm = finiteInteger(
+    value.averageHeartRateBpm,
+    25,
+    240,
+  );
+  const averageCadenceRpm = finiteInteger(value.averageCadenceRpm, 1, 250);
+  const seenStrengthExerciseIds = new Set<string>();
+  const strengthExercises =
+    activityType === "strength-training" && Array.isArray(value.strengthExercises)
+      ? value.strengthExercises.slice(0, 50).flatMap((exercise) => {
+          const normalized = normalizeStrengthExercise(exercise);
+          if (!normalized || seenStrengthExerciseIds.has(normalized.id)) return [];
+          seenStrengthExerciseIds.add(normalized.id);
+          return [normalized];
+        })
+      : [];
+  const customActivityName =
+    activityType === "other" || activityType === "other-aerobic"
+      ? normalizeShortText(value.customActivityName, 100)
+      : "";
+  if (
+    (activityType === "other" || activityType === "other-aerobic") &&
+    !customActivityName
+  ) {
+    return null;
+  }
+  const endedAt = value.endedAt as string;
+
+  return {
+    id: value.id,
+    endedAt,
+    careDayKey: normalizeCareDayKey(value.careDayKey, endedAt),
+    activityType,
+    ...(customActivityName ? { customActivityName } : {}),
+    durationMinutes,
+    intensity,
+    ...(perceivedExertion === null ? {} : { perceivedExertion }),
+    ...(distanceKm === null ? {} : { distanceKm }),
+    ...(steps === null ? {} : { steps }),
+    ...(averageHeartRateBpm === null
+      ? {}
+      : { averageHeartRateBpm }),
+    ...(averageCadenceRpm === null
+      ? {}
+      : { averageCadenceRpm }),
+    ...(normalizeShortText(value.equipmentName, 100)
+      ? { equipmentName: normalizeShortText(value.equipmentName, 100) }
+      : {}),
+    ...(normalizeShortText(value.resistanceLevel, 60)
+      ? { resistanceLevel: normalizeShortText(value.resistanceLevel, 60) }
+      : {}),
+    ...(strengthExercises.length ? { strengthExercises } : {}),
+    symptoms: normalizeOptionalText(value.symptoms),
+    notes: normalizeOptionalText(value.notes),
+    createdAt: value.createdAt as string,
+    updatedAt: value.updatedAt as string,
+  };
+}
+
 function normalizeIds(value: unknown) {
   return Array.isArray(value)
     ? Array.from(new Set(value.filter((id): id is string => typeof id === "string" && !!id)))
@@ -479,6 +723,7 @@ function normalizeTombstones(value: unknown): HealthDeletionTombstones {
     dietCheckInIds: normalizeIds(source.dietCheckInIds),
     waistEntryIds: normalizeIds(source.waistEntryIds),
     activityCheckInIds: normalizeIds(source.activityCheckInIds),
+    exerciseSessionIds: normalizeIds(source.exerciseSessionIds),
   };
 }
 
@@ -659,12 +904,14 @@ export function createDefaultHealthData(now = new Date()): HealthSyncData {
       createProfileWaistBaseline(DEFAULT_HEALTH_PROFILE, HEALTH_SYNC_EPOCH),
     ],
     activityCheckIns: [],
+    exerciseSessions: [],
     deletedEntryIds: {
       weightEntryIds: [],
       bloodPressureSessionIds: [],
       dietCheckInIds: [],
       waistEntryIds: [],
       activityCheckInIds: [],
+      exerciseSessionIds: [],
     },
     profile: { ...DEFAULT_HEALTH_PROFILE },
     // The seeded profile is a migration fallback until it is explicitly stored.
@@ -761,6 +1008,13 @@ export function normalizeHealthData(
         })
       : []
     ).filter((entry) => !tombstones.activityCheckInIds.includes(entry.id)),
+    exerciseSessions: (Array.isArray(value.exerciseSessions)
+      ? value.exerciseSessions.flatMap((entry) => {
+          const normalized = normalizeExerciseSession(entry);
+          return normalized ? [normalized] : [];
+        })
+      : []
+    ).filter((entry) => !tombstones.exerciseSessionIds.includes(entry.id)),
     deletedEntryIds: tombstones,
     profile,
     profileUpdatedAt,
@@ -803,6 +1057,12 @@ export function mergeHealthData(
         ...local.deletedEntryIds.activityCheckInIds,
       ]),
     ),
+    exerciseSessionIds: Array.from(
+      new Set([
+        ...cloud.deletedEntryIds.exerciseSessionIds,
+        ...local.deletedEntryIds.exerciseSessionIds,
+      ]),
+    ),
   };
   const cloudSettingsAreNewer =
     Date.parse(cloud.settingsUpdatedAt) >= Date.parse(local.settingsUpdatedAt);
@@ -836,6 +1096,11 @@ export function mergeHealthData(
       cloud.activityCheckIns,
       local.activityCheckIns,
       deletedEntryIds.activityCheckInIds,
+    ),
+    exerciseSessions: mergeRecordsById(
+      cloud.exerciseSessions,
+      local.exerciseSessions,
+      deletedEntryIds.exerciseSessionIds,
     ),
     deletedEntryIds,
     profile: cloudProfileIsNewer ? cloud.profile : local.profile,

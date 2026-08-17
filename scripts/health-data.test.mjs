@@ -34,6 +34,7 @@ const {
   mergeHealthData,
   normalizeHealthData,
   normalizeNewBloodPressureReading,
+  summarizeExerciseSessions,
 } = healthDataModule.exports;
 
 const profileUpdatedAt = "2026-08-10T10:00:00.000Z";
@@ -57,6 +58,28 @@ function legacyV3(overrides = {}) {
     settings: { ...DEFAULT_HEALTH_SETTINGS },
     settingsUpdatedAt: profileUpdatedAt,
     updatedAt: profileUpdatedAt,
+    ...overrides,
+  };
+}
+
+function legacyV4(overrides = {}) {
+  const source = createDefaultHealthData(freshBrowserNow);
+  source.schemaVersion = 4;
+  delete source.exerciseSessions;
+  delete source.deletedEntryIds.exerciseSessionIds;
+  return { ...source, ...overrides };
+}
+
+function exerciseSession(overrides = {}) {
+  return {
+    id: "exercise-session-1",
+    endedAt: "2026-08-17T06:30:00.000Z",
+    careDayKey: "2026-08-16",
+    activityType: "stationary-bike",
+    durationMinutes: 30,
+    intensity: "moderate",
+    createdAt: "2026-08-17T07:00:00.000Z",
+    updatedAt: "2026-08-17T07:00:00.000Z",
     ...overrides,
   };
 }
@@ -211,7 +234,7 @@ test("new BP readings require pulse while legacy pulse-less readings remain vali
 });
 
 test("a schema-v4 profile retains its date-only waist measurement date", () => {
-  const source = createDefaultHealthData(freshBrowserNow);
+  const source = legacyV4();
   source.profile = {
     ...source.profile,
     waistCircumferenceCm: 112,
@@ -227,11 +250,246 @@ test("a schema-v4 profile retains its date-only waist measurement date", () => {
   assert.equal(normalized.profile.waistMeasurementMethod, "midpoint");
 });
 
-test("schema-v3 tombstones normalize missing v4 lists to empty arrays", () => {
+test("schema-v3 tombstones normalize missing later-schema lists to empty arrays", () => {
   const normalized = normalizeHealthData(legacyV3());
 
   assert.deepEqual([...normalized.deletedEntryIds.waistEntryIds], []);
   assert.deepEqual([...normalized.deletedEntryIds.activityCheckInIds], []);
+  assert.deepEqual([...normalized.deletedEntryIds.exerciseSessionIds], []);
+  assert.deepEqual([...normalized.exerciseSessions], []);
+});
+
+test("schema-v4 data migrates in place to schema v5 exercise collections", () => {
+  const normalized = normalizeHealthData(legacyV4());
+
+  assert.equal(normalized.schemaVersion, 5);
+  assert.deepEqual([...normalized.exerciseSessions], []);
+  assert.deepEqual([...normalized.deletedEntryIds.exerciseSessionIds], []);
+});
+
+test("structured exercise sessions retain useful normalized detail", () => {
+  const source = legacyV4({
+    exerciseSessions: [
+      exerciseSession({
+        customActivityName: "  ignored for a built-in type  ",
+        perceivedExertion: 5.5,
+        distanceKm: 8.25,
+        steps: 1200,
+        averageHeartRateBpm: 112,
+        averageCadenceRpm: 68,
+        equipmentName: "  Home bike  ",
+        resistanceLevel: "  4 / 8  ",
+        strengthExercises: [
+          {
+            id: "should-be-ignored-for-cardio",
+            name: "Squat",
+            muscleGroups: ["legs"],
+            resistanceType: "bodyweight",
+            setCount: 2,
+          },
+        ],
+        symptoms: "  none beyond expected exertion  ",
+        notes: "  steady cadence  ",
+      }),
+      exerciseSession({
+        id: "strength-session-1",
+        activityType: "strength-training",
+        durationMinutes: 25,
+        intensity: "light",
+        strengthExercises: [
+          {
+            id: "strength-exercise-1",
+            name: "  Chair squat  ",
+            muscleGroups: ["legs", "hips", "legs", "unsupported"],
+            resistanceType: "bodyweight",
+            setCount: 3,
+            totalReps: 24,
+            loadKg: 9999,
+          },
+          {
+            id: "strength-exercise-1",
+            name: "Duplicate should not double-count",
+            muscleGroups: ["arms"],
+            resistanceType: "band",
+            setCount: 9,
+          },
+        ],
+      }),
+    ],
+  });
+  const normalized = normalizeHealthData(source);
+  const bike = normalized.exerciseSessions.find(
+    (session) => session.id === "exercise-session-1",
+  );
+  const strength = normalized.exerciseSessions.find(
+    (session) => session.id === "strength-session-1",
+  );
+
+  assert.ok(bike);
+  assert.equal(bike.careDayKey, "2026-08-16");
+  assert.equal(bike.customActivityName, undefined);
+  assert.equal(bike.perceivedExertion, 5.5);
+  assert.equal(bike.distanceKm, 8.25);
+  assert.equal(bike.steps, 1200);
+  assert.equal(bike.averageHeartRateBpm, 112);
+  assert.equal(bike.averageCadenceRpm, 68);
+  assert.equal(bike.equipmentName, "Home bike");
+  assert.equal(bike.resistanceLevel, "4 / 8");
+  assert.equal(bike.strengthExercises, undefined);
+  assert.equal(bike.symptoms, "none beyond expected exertion");
+  assert.equal(bike.notes, "steady cadence");
+  assert.ok(strength);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(strength.strengthExercises)),
+    [
+      {
+        id: "strength-exercise-1",
+        name: "Chair squat",
+        muscleGroups: ["legs", "hips"],
+        resistanceType: "bodyweight",
+        setCount: 3,
+        totalReps: 24,
+      },
+    ],
+  );
+});
+
+test("invalid exercise cores are rejected and invalid optional metrics stay unknown", () => {
+  const normalized = normalizeHealthData(
+    legacyV4({
+      exerciseSessions: [
+        exerciseSession({ id: "bad-type", activityType: "teleporting" }),
+        exerciseSession({ id: "bad-intensity", intensity: "maximum-ish" }),
+        exerciseSession({ id: "bad-duration", durationMinutes: 0 }),
+        exerciseSession({
+          id: "missing-custom-name",
+          activityType: "other-aerobic",
+          customActivityName: "   ",
+        }),
+        exerciseSession({
+          id: "valid-with-bad-optional-values",
+          intensity: "unknown",
+          perceivedExertion: 11,
+          distanceKm: 0,
+          steps: 1.5,
+          averageHeartRateBpm: 241,
+          averageCadenceRpm: 0,
+        }),
+      ],
+    }),
+  );
+
+  assert.equal(normalized.exerciseSessions.length, 1);
+  const [session] = normalized.exerciseSessions;
+  assert.equal(session.id, "valid-with-bad-optional-values");
+  assert.equal(session.intensity, "unknown");
+  assert.equal(session.perceivedExertion, undefined);
+  assert.equal(session.distanceKm, undefined);
+  assert.equal(session.steps, undefined);
+  assert.equal(session.averageHeartRateBpm, undefined);
+  assert.equal(session.averageCadenceRpm, undefined);
+});
+
+test("exercise summaries use aerobic equivalence and distinct Tehran calendar dates", () => {
+  const sessions = [
+    exerciseSession({
+      id: "walk-moderate",
+      activityType: "walking",
+      durationMinutes: 30,
+      intensity: "moderate",
+      careDayKey: "2026-08-16",
+    }),
+    exerciseSession({
+      id: "bike-vigorous",
+      durationMinutes: 20,
+      intensity: "vigorous",
+      careDayKey: "2026-08-16",
+    }),
+    exerciseSession({
+      id: "bike-unknown",
+      durationMinutes: 10,
+      intensity: "unknown",
+      careDayKey: "2026-08-16",
+    }),
+    exerciseSession({
+      id: "mobility-vigorous",
+      activityType: "mobility",
+      durationMinutes: 15,
+      intensity: "vigorous",
+      careDayKey: "2026-08-16",
+    }),
+    exerciseSession({
+      id: "strength-before-noon",
+      activityType: "strength-training",
+      durationMinutes: 10,
+      intensity: "light",
+      endedAt: "2026-08-17T05:00:00.000Z",
+      careDayKey: "2026-08-16",
+    }),
+    exerciseSession({
+      id: "strength-after-noon",
+      activityType: "strength-training",
+      durationMinutes: 10,
+      intensity: "moderate",
+      endedAt: "2026-08-17T10:00:00.000Z",
+      careDayKey: "2026-08-17",
+    }),
+    exerciseSession({
+      id: "outside-period",
+      durationMinutes: 500,
+      careDayKey: "2026-08-10",
+    }),
+  ];
+
+  const summary = summarizeExerciseSessions(sessions, [
+    "2026-08-16",
+    "2026-08-17",
+  ]);
+
+  assert.equal(summary.sessions.length, 6);
+  assert.equal(summary.totalMinutes, 95);
+  assert.equal(summary.moderateAerobicMinutes, 30);
+  assert.equal(summary.vigorousAerobicMinutes, 20);
+  assert.equal(summary.moderateEquivalentMinutes, 70);
+  assert.equal(summary.strengthDayCount, 1);
+});
+
+test("exercise session merge is last-write-wins while tombstones stay permanent", () => {
+  const cloud = normalizeHealthData(
+    legacyV4({
+      exerciseSessions: [exerciseSession({ durationMinutes: 20 })],
+    }),
+  );
+  const local = normalizeHealthData(
+    legacyV4({
+      exerciseSessions: [
+        exerciseSession({
+          durationMinutes: 35,
+          updatedAt: "2026-08-17T08:00:00.000Z",
+        }),
+      ],
+    }),
+  );
+  const merged = mergeHealthData(cloud, local);
+
+  assert.equal(merged.exerciseSessions.length, 1);
+  assert.equal(merged.exerciseSessions[0].durationMinutes, 35);
+
+  const deletedLocal = normalizeHealthData({
+    ...local,
+    exerciseSessions: [],
+    deletedEntryIds: {
+      ...local.deletedEntryIds,
+      exerciseSessionIds: ["exercise-session-1"],
+    },
+  });
+  const mergedAfterDelete = mergeHealthData(cloud, deletedLocal);
+
+  assert.equal(mergedAfterDelete.exerciseSessions.length, 0);
+  assert.deepEqual(
+    [...mergedAfterDelete.deletedEntryIds.exerciseSessionIds],
+    ["exercise-session-1"],
+  );
 });
 
 test("a tombstoned waist baseline is never seeded again", () => {

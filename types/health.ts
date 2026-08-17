@@ -140,6 +140,74 @@ export interface ActivityCheckIn {
   updatedAt: string;
 }
 
+export type ExerciseActivityType =
+  | "stationary-bike"
+  | "walking"
+  | "outdoor-cycling"
+  | "running"
+  | "elliptical"
+  | "swimming"
+  | "strength-training"
+  | "mobility"
+  | "other-aerobic"
+  | "other";
+
+export type ExerciseIntensity =
+  | "light"
+  | "moderate"
+  | "vigorous"
+  | "unknown";
+
+export type StrengthMuscleGroup =
+  | "legs"
+  | "hips"
+  | "back"
+  | "abdomen"
+  | "chest"
+  | "shoulders"
+  | "arms";
+
+export type StrengthResistanceType =
+  | "bodyweight"
+  | "free-weight"
+  | "machine"
+  | "band"
+  | "other";
+
+export interface StrengthExerciseLog {
+  id: string;
+  name: string;
+  muscleGroups: StrengthMuscleGroup[];
+  resistanceType: StrengthResistanceType;
+  setCount: number;
+  totalReps?: number;
+  loadKg?: number;
+}
+
+export interface ExerciseSession {
+  id: string;
+  /** When the completed session ended; active duration is stored separately. */
+  endedAt: string;
+  careDayKey?: string;
+  activityType: ExerciseActivityType;
+  customActivityName?: string;
+  durationMinutes: number;
+  intensity: ExerciseIntensity;
+  /** Relative effort on a 0–10 scale; useful when heart-rate zones are unreliable. */
+  perceivedExertion?: number;
+  distanceKm?: number;
+  steps?: number;
+  averageHeartRateBpm?: number;
+  averageCadenceRpm?: number;
+  equipmentName?: string;
+  resistanceLevel?: string;
+  strengthExercises?: StrengthExerciseLog[];
+  symptoms?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface HealthProfile {
   dateOfBirth: string;
   heightCm: number;
@@ -185,4 +253,5 @@ export interface HealthDeletionTombstones {
   dietCheckInIds: string[];
   waistEntryIds: string[];
   activityCheckInIds: string[];
+  exerciseSessionIds: string[];
 }
