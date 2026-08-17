@@ -2879,6 +2879,11 @@ function ExerciseSessionCard({
             Avg HR {session.averageHeartRateBpm} bpm
           </span>
         )}
+        {session.deviceReportedCaloriesKcal === undefined ? null : (
+          <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-900">
+            ≈ {session.deviceReportedCaloriesKcal.toLocaleString()} kcal · device estimate
+          </span>
+        )}
         {session.averageCadenceRpm === undefined ? null : (
           <span className="rounded-full bg-white px-2 py-1">
             Avg {session.averageCadenceRpm} rpm
@@ -3015,6 +3020,12 @@ function ExerciseSessionForm({
       ? ""
       : String(editingSession.averageCadenceRpm),
   );
+  const [deviceReportedCaloriesKcal, setDeviceReportedCaloriesKcal] = useState(
+    () =>
+      editingSession?.deviceReportedCaloriesKcal === undefined
+        ? ""
+        : String(editingSession.deviceReportedCaloriesKcal),
+  );
   const [equipmentName, setEquipmentName] = useState(
     () => editingSession?.equipmentName ?? "",
   );
@@ -3068,6 +3079,7 @@ function ExerciseSessionForm({
     setSteps("");
     setAverageHeartRateBpm("");
     setAverageCadenceRpm("");
+    setDeviceReportedCaloriesKcal("");
     setEquipmentName("");
     setResistanceLevel("");
     setStrengthExercises(
@@ -3133,6 +3145,7 @@ function ExerciseSessionForm({
     const stepCount = parseNumber(steps);
     const averageHeartRate = parseNumber(averageHeartRateBpm);
     const averageCadence = parseNumber(averageCadenceRpm);
+    const deviceCalories = parseNumber(deviceReportedCaloriesKcal);
 
     if (!endIso || isFutureTimestamp(endIso, now)) {
       setMessage("Choose a valid end time that is not in the future.");
@@ -3184,6 +3197,18 @@ function ExerciseSessionForm({
         averageHeartRate > 240)
     ) {
       setMessage("Use an average heart rate from 25 to 240 bpm.");
+      return;
+    }
+    if (
+      deviceReportedCaloriesKcal.trim() &&
+      (deviceCalories === null ||
+        !Number.isInteger(deviceCalories) ||
+        deviceCalories < 1 ||
+        deviceCalories > 20_000)
+    ) {
+      setMessage(
+        "Use the whole-number device estimate from 1 to 20,000 kcal, or leave it blank.",
+      );
       return;
     }
     if (
@@ -3277,6 +3302,9 @@ function ExerciseSessionForm({
         ...(averageHeartRate === null
           ? {}
           : { averageHeartRateBpm: averageHeartRate }),
+        ...(deviceCalories === null
+          ? {}
+          : { deviceReportedCaloriesKcal: deviceCalories }),
         ...(supportsMachineMetrics && averageCadence !== null
           ? { averageCadenceRpm: averageCadence }
           : {}),
@@ -3425,7 +3453,7 @@ function ExerciseSessionForm({
 
       <details className="mt-3 rounded-md border border-zinc-200 bg-white">
         <summary className="cursor-pointer px-3 py-3 text-sm font-semibold text-zinc-800">
-          Optional details for better analysis
+          Optional details · calories, distance, heart rate, strength
         </summary>
         <div className="border-t border-zinc-100 p-3">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -3455,6 +3483,26 @@ function ExerciseSessionForm({
                 onChange={(event) => setAverageHeartRateBpm(event.target.value)}
                 placeholder="Optional"
               />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Device estimate (kcal)</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max="20000"
+                step="1"
+                value={deviceReportedCaloriesKcal}
+                onChange={(event) =>
+                  setDeviceReportedCaloriesKcal(event.target.value)
+                }
+                placeholder="Machine or wearable value"
+              />
+              <span className="mt-1 block text-xs leading-4 text-zinc-500">
+                Enter the displayed whole-kcal value. It is best for like-with-like
+                trends, not precise energy burn; blank stays unknown, not zero.
+              </span>
             </label>
             {supportsDistance ? (
               <label>
@@ -5604,6 +5652,16 @@ export function HealthTracker({
           ) : (
             <p className="mt-3 text-sm text-zinc-500">No activity types logged in this range.</p>
           )}
+          {exerciseSummary.deviceCalorieSessionCount > 0 ? (
+            <div className="mt-3 rounded-md bg-amber-50 px-3 py-2.5 text-amber-950">
+              <p className="text-sm font-semibold">
+                ≈ {exerciseSummary.totalDeviceReportedCaloriesKcal.toLocaleString()} kcal · sum of recorded device estimates
+              </p>
+              <p className="mt-0.5 text-xs leading-5 text-amber-800">
+                Reported for {exerciseSummary.deviceCalorieSessionCount} of {selectedExerciseSessions.length} session{selectedExerciseSessions.length === 1 ? "" : "s"}. Estimates are not used as a calorie goal or food budget.
+              </p>
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-4 rounded-lg border border-zinc-200 p-3 sm:p-4">
@@ -5633,6 +5691,11 @@ export function HealthTracker({
                       ) : null}
                       {day.summary.strengthDayCount > 0 ? (
                         <span className="rounded-full bg-violet-100 px-2 py-1">Strength</span>
+                      ) : null}
+                      {day.summary.deviceCalorieSessionCount > 0 ? (
+                        <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-900">
+                          ≈ {day.summary.totalDeviceReportedCaloriesKcal.toLocaleString()} kcal · {day.summary.deviceCalorieSessionCount}/{day.sessions.length} sessions reported
+                        </span>
                       ) : null}
                       {day.distanceKm > 0 ? (
                         <span className="rounded-full bg-white px-2 py-1">{day.distanceKm.toLocaleString(undefined, { maximumFractionDigits: 2 })} km</span>

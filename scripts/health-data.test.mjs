@@ -279,6 +279,7 @@ test("structured exercise sessions retain useful normalized detail", () => {
         steps: 1200,
         averageHeartRateBpm: 112,
         averageCadenceRpm: 68,
+        deviceReportedCaloriesKcal: 245,
         equipmentName: "  Home bike  ",
         resistanceLevel: "  4 / 8  ",
         strengthExercises: [
@@ -336,6 +337,7 @@ test("structured exercise sessions retain useful normalized detail", () => {
   assert.equal(bike.steps, 1200);
   assert.equal(bike.averageHeartRateBpm, 112);
   assert.equal(bike.averageCadenceRpm, 68);
+  assert.equal(bike.deviceReportedCaloriesKcal, 245);
   assert.equal(bike.equipmentName, "Home bike");
   assert.equal(bike.resistanceLevel, "4 / 8");
   assert.equal(bike.strengthExercises, undefined);
@@ -378,6 +380,7 @@ test("invalid exercise cores are rejected and invalid optional metrics stay unkn
           steps: 1.5,
           averageHeartRateBpm: 241,
           averageCadenceRpm: 0,
+          deviceReportedCaloriesKcal: 0,
         }),
       ],
     }),
@@ -392,6 +395,38 @@ test("invalid exercise cores are rejected and invalid optional metrics stay unkn
   assert.equal(session.steps, undefined);
   assert.equal(session.averageHeartRateBpm, undefined);
   assert.equal(session.averageCadenceRpm, undefined);
+  assert.equal(session.deviceReportedCaloriesKcal, undefined);
+});
+
+test("device calorie estimates keep valid whole-number values and treat invalid values as unknown", () => {
+  const values = [
+    ["minimum", 1],
+    ["typical", 245],
+    ["maximum", 20_000],
+    ["zero", 0],
+    ["negative", -10],
+    ["fractional", 10.5],
+    ["too-high", 20_001],
+    ["numeric-string", "245"],
+  ];
+  const normalized = normalizeHealthData(
+    legacyV4({
+      exerciseSessions: values.map(([id, deviceReportedCaloriesKcal]) =>
+        exerciseSession({ id, deviceReportedCaloriesKcal }),
+      ),
+    }),
+  );
+  const byId = new Map(
+    normalized.exerciseSessions.map((exercise) => [exercise.id, exercise]),
+  );
+
+  assert.equal(normalized.exerciseSessions.length, values.length);
+  assert.equal(byId.get("minimum").deviceReportedCaloriesKcal, 1);
+  assert.equal(byId.get("typical").deviceReportedCaloriesKcal, 245);
+  assert.equal(byId.get("maximum").deviceReportedCaloriesKcal, 20_000);
+  for (const id of ["zero", "negative", "fractional", "too-high", "numeric-string"]) {
+    assert.equal(byId.get(id).deviceReportedCaloriesKcal, undefined);
+  }
 });
 
 test("exercise dates follow Tehran midnight rather than the medication Care Day", () => {
@@ -478,6 +513,7 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
       intensity: "moderate",
       endedAt: "2026-08-17T05:00:00.000Z",
       careDayKey: "2026-08-16",
+      deviceReportedCaloriesKcal: 100,
     }),
     exerciseSession({
       id: "bike-vigorous",
@@ -485,6 +521,7 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
       intensity: "vigorous",
       endedAt: "2026-08-17T10:00:00.000Z",
       careDayKey: "2099-01-01",
+      deviceReportedCaloriesKcal: 200,
     }),
     exerciseSession({
       id: "strength-aug-16",
@@ -498,6 +535,7 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
       durationMinutes: 10,
       intensity: "light",
       endedAt: "2026-08-11T12:00:00.000Z",
+      deviceReportedCaloriesKcal: 50,
     }),
     exerciseSession({
       id: "strength-aug-10",
@@ -505,6 +543,7 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
       durationMinutes: 5,
       intensity: "moderate",
       endedAt: "2026-08-10T12:00:00.000Z",
+      deviceReportedCaloriesKcal: 60,
     }),
     exerciseSession({
       id: "strength-jul-19",
@@ -518,6 +557,7 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
       durationMinutes: 40,
       intensity: "moderate",
       endedAt: "2026-07-18T12:00:00.000Z",
+      deviceReportedCaloriesKcal: 70,
     }),
     exerciseSession({
       id: "older-mobility",
@@ -536,6 +576,8 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
   assert.equal(today.vigorousAerobicMinutes, 20);
   assert.equal(today.moderateEquivalentMinutes, 70);
   assert.equal(today.strengthDayCount, 0);
+  assert.equal(today.totalDeviceReportedCaloriesKcal, 300);
+  assert.equal(today.deviceCalorieSessionCount, 2);
 
   const sevenDays = summarizeExerciseSessions(
     sessions,
@@ -546,6 +588,8 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
   assert.equal(sevenDays.totalMinutes, 75);
   assert.equal(sevenDays.moderateEquivalentMinutes, 70);
   assert.equal(sevenDays.strengthDayCount, 2);
+  assert.equal(sevenDays.totalDeviceReportedCaloriesKcal, 350);
+  assert.equal(sevenDays.deviceCalorieSessionCount, 3);
 
   const thirtyDays = summarizeExerciseSessions(
     sessions,
@@ -556,6 +600,8 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
   assert.equal(thirtyDays.totalMinutes, 105);
   assert.equal(thirtyDays.moderateEquivalentMinutes, 70);
   assert.equal(thirtyDays.strengthDayCount, 4);
+  assert.equal(thirtyDays.totalDeviceReportedCaloriesKcal, 410);
+  assert.equal(thirtyDays.deviceCalorieSessionCount, 4);
 
   const allTime = summarizeExerciseSessions(sessions, null);
   assert.equal(allTime.sessions.length, 8);
@@ -563,6 +609,8 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
   assert.equal(allTime.totalMinutes, 150);
   assert.equal(allTime.moderateEquivalentMinutes, 110);
   assert.equal(allTime.strengthDayCount, 4);
+  assert.equal(allTime.totalDeviceReportedCaloriesKcal, 480);
+  assert.equal(allTime.deviceCalorieSessionCount, 5);
 
   const empty = summarizeExerciseSessions(sessions, []);
   assert.equal(empty.sessions.length, 0);
@@ -570,6 +618,8 @@ test("exercise summaries derive Today, 7-day, 30-day and all-time views", () => 
   assert.equal(empty.totalMinutes, 0);
   assert.equal(empty.moderateEquivalentMinutes, 0);
   assert.equal(empty.strengthDayCount, 0);
+  assert.equal(empty.totalDeviceReportedCaloriesKcal, 0);
+  assert.equal(empty.deviceCalorieSessionCount, 0);
 });
 
 test("exercise summaries keep light and unknown aerobic work separate and dedupe strength dates", () => {
@@ -620,6 +670,7 @@ test("exercise session merge is last-write-wins while tombstones stay permanent"
       exerciseSessions: [
         exerciseSession({
           durationMinutes: 35,
+          deviceReportedCaloriesKcal: 300,
           updatedAt: "2026-08-17T08:00:00.000Z",
         }),
       ],
@@ -629,6 +680,7 @@ test("exercise session merge is last-write-wins while tombstones stay permanent"
 
   assert.equal(merged.exerciseSessions.length, 1);
   assert.equal(merged.exerciseSessions[0].durationMinutes, 35);
+  assert.equal(merged.exerciseSessions[0].deviceReportedCaloriesKcal, 300);
 
   const deletedLocal = normalizeHealthData({
     ...local,

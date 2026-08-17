@@ -289,6 +289,8 @@ export type ExercisePeriodSummary = {
   vigorousAerobicMinutes: number;
   moderateEquivalentMinutes: number;
   strengthDayCount: number;
+  totalDeviceReportedCaloriesKcal: number;
+  deviceCalorieSessionCount: number;
 };
 
 /** Derives report metrics from raw sessions; no aggregate is persisted. */
@@ -319,6 +321,9 @@ export function summarizeExerciseSessions(
   const activeDates = includedSessions
     .map((session) => getExerciseSessionTehranDateKey(session))
     .filter((key): key is string => Boolean(key));
+  const sessionsWithDeviceCalories = includedSessions.filter(
+    (session) => session.deviceReportedCaloriesKcal !== undefined,
+  );
 
   return {
     sessions: includedSessions,
@@ -332,6 +337,11 @@ export function summarizeExerciseSessions(
     moderateEquivalentMinutes:
       moderateAerobicMinutes + vigorousAerobicMinutes * 2,
     strengthDayCount: new Set(strengthDates).size,
+    totalDeviceReportedCaloriesKcal: sessionsWithDeviceCalories.reduce(
+      (total, session) => total + (session.deviceReportedCaloriesKcal ?? 0),
+      0,
+    ),
+    deviceCalorieSessionCount: sessionsWithDeviceCalories.length,
   };
 }
 
@@ -689,6 +699,11 @@ function normalizeExerciseSession(value: unknown): ExerciseSession | null {
     240,
   );
   const averageCadenceRpm = finiteInteger(value.averageCadenceRpm, 1, 250);
+  const deviceReportedCaloriesKcal = finiteInteger(
+    value.deviceReportedCaloriesKcal,
+    1,
+    20_000,
+  );
   const seenStrengthExerciseIds = new Set<string>();
   const strengthExercises =
     activityType === "strength-training" && Array.isArray(value.strengthExercises)
@@ -730,6 +745,9 @@ function normalizeExerciseSession(value: unknown): ExerciseSession | null {
     ...(averageCadenceRpm === null
       ? {}
       : { averageCadenceRpm }),
+    ...(deviceReportedCaloriesKcal === null
+      ? {}
+      : { deviceReportedCaloriesKcal }),
     ...(normalizeShortText(value.equipmentName, 100)
       ? { equipmentName: normalizeShortText(value.equipmentName, 100) }
       : {}),

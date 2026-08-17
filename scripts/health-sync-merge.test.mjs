@@ -129,6 +129,7 @@ test("the health sync server keeps the newer version of an exercise session", ()
     exerciseSessions: [
       exerciseSession({
         durationMinutes: 35,
+        deviceReportedCaloriesKcal: 300,
         updatedAt: "2026-08-17T08:00:00.000Z",
       }),
     ],
@@ -142,6 +143,7 @@ test("the health sync server keeps the newer version of an exercise session", ()
 
   assert.equal(merged.exerciseSessions.length, 1);
   assert.equal(merged.exerciseSessions[0].durationMinutes, 35);
+  assert.equal(merged.exerciseSessions[0].deviceReportedCaloriesKcal, 300);
 });
 
 test("an exercise-session tombstone wins over stored and incoming records", () => {

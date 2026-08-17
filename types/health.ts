@@ -200,6 +200,8 @@ export interface ExerciseSession {
   steps?: number;
   averageHeartRateBpm?: number;
   averageCadenceRpm?: number;
+  /** Estimate displayed by a fitness machine or wearable; not measured expenditure. */
+  deviceReportedCaloriesKcal?: number;
   equipmentName?: string;
   resistanceLevel?: string;
   strengthExercises?: StrengthExerciseLog[];
