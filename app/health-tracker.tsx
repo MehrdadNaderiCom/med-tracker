@@ -3351,8 +3351,8 @@ function ExerciseSessionForm({
         not zero.
       </p>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <label>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <label className="sm:col-span-2 xl:col-span-1">
           <span className={LABEL_CLASS}>Activity</span>
           <select
             className={INPUT_CLASS}
@@ -3367,12 +3367,12 @@ function ExerciseSessionForm({
             ))}
           </select>
         </label>
-        <div>
+        <div className="min-w-0 sm:col-span-2 xl:col-span-2">
           <label className={LABEL_CLASS} htmlFor={endedAtInputId}>Ended (Iran time)</label>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <input
               id={endedAtInputId}
-              className={INPUT_CLASS}
+              className={`${INPUT_CLASS} flex-1`}
               type="datetime-local"
               required
               max={toDateTimeLocal(new Date(now.getTime() + 10 * MINUTE_MS))}
@@ -3384,7 +3384,8 @@ function ExerciseSessionForm({
             />
             <button
               type="button"
-              className="shrink-0 rounded-md border border-zinc-200 bg-white px-3 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
+              aria-label="Set exercise end time to now"
+              className="min-h-11 w-full shrink-0 rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-emerald-100 sm:w-auto"
               onClick={() => {
                 setEndedAt(toDateTimeLocal(new Date()));
                 setEndTimeEdited(true);
