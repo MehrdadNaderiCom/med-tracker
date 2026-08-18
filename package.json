@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:care-day": "node --test scripts/care-day-state.test.mjs",
     "test:sync": "node --test scripts/primary-sync-merge.test.mjs",
     "test:health": "node --test scripts/health-schedule.test.mjs",
     "test:health-data": "node --test scripts/health-data.test.mjs",

@@ -35,23 +35,30 @@ import {
   X,
 } from "lucide-react";
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MedTrackLoading } from "./med-track-loading";
 import HealthTracker from "./health-tracker";
+import {
+  createLegacyCareDayState,
+  normalizeCareDayState,
+  selectCareDayState,
+  transitionCareDayState,
+  type CareDayState,
+} from "./care-day-state";
 import {
   addCareDays,
   averageBloodPressure,
   careDayKeyForInstant,
   entryCareDayKey,
   evaluateHealthTasks,
+  nextCareDayKeyAfterManualEnd,
 } from "./health-schedule";
 import {
   formatDateKey,
   formatTehranInstant,
   formatTimeOfDay,
   parseDateKey,
-  tehranDateKey,
   tehranTime24,
   tehranWallTimeToIso,
   weekdayIndexForDateKey,
@@ -248,6 +255,7 @@ type MedTrackSyncData = {
   deletedLogIds: string[];
   categories: MedicationCategoryOption[];
   routineCategories: RoutineCategory[];
+  careDayState: CareDayState;
   careDayKey: string;
   reminderSettings: ReminderSettings;
   personalPlanVersion: number;
@@ -260,6 +268,7 @@ const DELETED_LOG_IDS_STORAGE_KEY = "medtrack-deleted-log-ids";
 const CATEGORIES_STORAGE_KEY = "medtrack-categories";
 const ROUTINE_CATEGORIES_STORAGE_KEY = "medtrack-routine-categories";
 const CARE_DAY_STORAGE_KEY = "medtrack-care-day";
+const CARE_DAY_STATE_STORAGE_KEY = "medtrack-care-day-state-v1";
 const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
 const HEALTH_DATA_STORAGE_KEY = "medtrack-health-data-v1";
@@ -974,6 +983,21 @@ function getNextCareDayKey(careDayKey: string) {
     : getDefaultCareDayKey(new Date());
 }
 
+function createCareDayMutationId(now: Date) {
+  return `${now.toISOString()}:${createId()}`;
+}
+
+function resolveCareDayState(state: CareDayState, now: Date) {
+  const resolvedKey = resolveCareDayKey(state.key, now);
+  return resolvedKey === state.key
+    ? state
+    : transitionCareDayState(
+        state,
+        resolvedKey,
+        createCareDayMutationId(now),
+      );
+}
+
 function normalizeReminderSettings(value: unknown): ReminderSettings {
   if (!isRecord(value)) {
     return DEFAULT_REMINDER_SETTINGS;
@@ -1075,13 +1099,18 @@ function mergeSyncData(
     });
   });
 
+  const careDayState =
+    selectCareDayState(cloudData.careDayState, localData.careDayState) ??
+    localData.careDayState;
+
   return {
     medications,
     logs: Array.from(logById.values()),
     deletedLogIds,
     categories,
     routineCategories,
-    careDayKey: cloudData.careDayKey || localData.careDayKey,
+    careDayState,
+    careDayKey: careDayState.key,
     reminderSettings: {
       browserNotifications:
         cloudData.reminderSettings.browserNotifications ||
@@ -1120,10 +1149,12 @@ function normalizeSyncData(
       : 0;
   const shouldUpdatePersonalPlan =
     personalPlanVersion < PERSONAL_PLAN_VERSION;
-  const careDayKeyForPlan =
-    typeof value.careDayKey === "string"
-      ? resolveCareDayKey(value.careDayKey, now)
-      : getDefaultCareDayKey(now);
+  const cloudCareDayState = resolveCareDayState(
+    normalizeCareDayState(value.careDayState, value.careDayKey) ??
+      createLegacyCareDayState(getDefaultCareDayKey(now))!,
+    now,
+  );
+  const careDayKeyForPlan = cloudCareDayState.key;
   const medications = shouldUpdatePersonalPlan
     ? mergePersonalMedicationPlan(rawMedications, true, careDayKeyForPlan)
     : rawMedications;
@@ -1163,6 +1194,7 @@ function normalizeSyncData(
       : [],
     categories,
     routineCategories,
+    careDayState: cloudCareDayState,
     careDayKey,
     reminderSettings: normalizeReminderSettings(value.reminderSettings),
     personalPlanVersion: PERSONAL_PLAN_VERSION,
@@ -1179,6 +1211,10 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
   const storedPlanVersion = readStoredNumber(PERSONAL_PLAN_VERSION_STORAGE_KEY);
   const shouldUpdatePersonalPlan = storedPlanVersion < PERSONAL_PLAN_VERSION;
   const storedCareDayKey = readStoredString(CARE_DAY_STORAGE_KEY);
+  const storedCareDayState = normalizeCareDayState(
+    readStoredJson(CARE_DAY_STATE_STORAGE_KEY),
+    storedCareDayKey,
+  );
   const storedMedications = readStoredArray<Medication>(
     MEDICATIONS_STORAGE_KEY,
     normalizeMedication,
@@ -1205,7 +1241,12 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
     normalizeIntakeLog,
   ).filter((log) => !storedDeletedLogIdSet.has(log.id));
 
-  const careDayKey = resolveCareDayKey(storedCareDayKey, now);
+  const careDayState = resolveCareDayState(
+    storedCareDayState ??
+      createLegacyCareDayState(getDefaultCareDayKey(now))!,
+    now,
+  );
+  const careDayKey = careDayState.key;
 
   return {
     medications: shouldLoadStarterPlan
@@ -1225,6 +1266,7 @@ function createLocalSyncData(now: Date): MedTrackSyncData {
         ? ensureItemsById(storedRoutineCategories, DEFAULT_ROUTINE_CATEGORIES)
         : storedRoutineCategories
     ).sort((first, second) => first.sortOrder - second.sortOrder),
+    careDayState,
     careDayKey,
     reminderSettings: normalizeReminderSettings(
       readStoredJson(REMINDER_SETTINGS_STORAGE_KEY),
@@ -1240,6 +1282,7 @@ function writeLocalSyncData(data: MedTrackSyncData) {
   writeStoredArray(DELETED_LOG_IDS_STORAGE_KEY, data.deletedLogIds);
   writeStoredArray(CATEGORIES_STORAGE_KEY, data.categories);
   writeStoredArray(ROUTINE_CATEGORIES_STORAGE_KEY, data.routineCategories);
+  writeStoredJson(CARE_DAY_STATE_STORAGE_KEY, data.careDayState);
   writeStoredString(CARE_DAY_STORAGE_KEY, data.careDayKey);
   writeStoredJson(REMINDER_SETTINGS_STORAGE_KEY, data.reminderSettings);
   writeStoredString(
@@ -2356,7 +2399,13 @@ export default function MedTrackApp() {
   const [routineCategoryForm, setRoutineCategoryForm] =
     useState<RoutineCategoryFormState>(() => createEmptyRoutineCategoryForm());
   const [today, setToday] = useState<Date | null>(null);
-  const [careDayKey, setCareDayKey] = useState("");
+  const [careDayState, setCareDayStateValue] =
+    useState<CareDayState | null>(null);
+  const [careDayEndConfirmation, setCareDayEndConfirmation] = useState<{
+    expectedState: CareDayState;
+    nextKey: string;
+    pendingCount: number;
+  } | null>(null);
   const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(
     DEFAULT_REMINDER_SETTINGS,
   );
@@ -2375,9 +2424,33 @@ export default function MedTrackApp() {
   const [lastCloudSyncAt, setLastCloudSyncAt] = useState("");
   const [syncMessage, setSyncMessage] = useState("Checking cloud database");
   const [isStorageReady, setIsStorageReady] = useState(false);
+  const careDayStateRef = useRef<CareDayState | null>(null);
+  const cloudRefreshSequenceRef = useRef(0);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
   const recordedAvoidanceKeys = useRef<Set<string>>(new Set());
   const pageContentRef = useRef<HTMLElement>(null);
+
+  const replaceCareDayState = useCallback((nextState: CareDayState) => {
+    careDayStateRef.current = nextState;
+    setCareDayStateValue(nextState);
+  }, []);
+
+  const moveToCareDay = useCallback((nextKey: string, now = new Date()) => {
+    const currentState = careDayStateRef.current;
+    if (!currentState || currentState.key === nextKey) return currentState;
+
+    const nextState = transitionCareDayState(
+      currentState,
+      nextKey,
+      createCareDayMutationId(now),
+    );
+    replaceCareDayState(nextState);
+    // Persist the cursor synchronously so a reload cannot land between the
+    // click and React's storage effect.
+    writeStoredJson(CARE_DAY_STATE_STORAGE_KEY, nextState);
+    writeStoredString(CARE_DAY_STORAGE_KEY, nextState.key);
+    return nextState;
+  }, [replaceCareDayState]);
 
   function handleTabChange(nextTab: TabId) {
     const didChange = nextTab !== activeTab;
@@ -2406,6 +2479,7 @@ export default function MedTrackApp() {
     });
   }
 
+  const careDayKey = careDayState?.key ?? "";
   const todayKey = careDayKey;
   const todayLabel = careDayKey
     ? (formatDateKey(careDayKey, {
@@ -2495,7 +2569,7 @@ export default function MedTrackApp() {
           : Notification.permission,
       );
       setToday(now);
-      setCareDayKey(syncData.careDayKey);
+      replaceCareDayState(syncData.careDayState);
       setIsCloudConfigured(nextIsCloudConfigured);
       setIsHealthCloudConfigured(nextHealthCloudConfigured);
       setHealthSyncStatus(nextHealthSyncStatus);
@@ -2511,7 +2585,7 @@ export default function MedTrackApp() {
       isCancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, []);
+  }, [replaceCareDayState]);
 
   useEffect(() => {
     if (!isStorageReady) {
@@ -2554,12 +2628,13 @@ export default function MedTrackApp() {
   }, [isStorageReady, routineCategories]);
 
   useEffect(() => {
-    if (!isStorageReady || !careDayKey) {
+    if (!isStorageReady || !careDayState) {
       return;
     }
 
-    writeStoredString(CARE_DAY_STORAGE_KEY, careDayKey);
-  }, [careDayKey, isStorageReady]);
+    writeStoredJson(CARE_DAY_STATE_STORAGE_KEY, careDayState);
+    writeStoredString(CARE_DAY_STORAGE_KEY, careDayState.key);
+  }, [careDayState, isStorageReady]);
 
   useEffect(() => {
     if (!isStorageReady) {
@@ -2578,7 +2653,12 @@ export default function MedTrackApp() {
   }, [healthData, isStorageReady]);
 
   useEffect(() => {
-    if (!isStorageReady || !isCloudConfigured || !isAuthenticated) {
+    if (
+      !isStorageReady ||
+      !isCloudConfigured ||
+      !isAuthenticated ||
+      !careDayState
+    ) {
       return;
     }
 
@@ -2589,7 +2669,8 @@ export default function MedTrackApp() {
         deletedLogIds,
         categories,
         routineCategories,
-        careDayKey,
+        careDayState,
+        careDayKey: careDayState.key,
         reminderSettings,
         personalPlanVersion: PERSONAL_PLAN_VERSION,
         updatedAt: new Date().toISOString(),
@@ -2621,7 +2702,7 @@ export default function MedTrackApp() {
 
     return () => window.clearTimeout(timeoutId);
   }, [
-    careDayKey,
+    careDayState,
     categories,
     deletedLogIds,
     isAuthenticated,
@@ -2658,11 +2739,20 @@ export default function MedTrackApp() {
   }, [healthData, isAuthenticated, isHealthCloudConfigured, isStorageReady]);
 
   useEffect(() => {
-    if (!isStorageReady || !isCloudConfigured || !isAuthenticated) {
+    if (
+      !isStorageReady ||
+      !isCloudConfigured ||
+      !isAuthenticated ||
+      !careDayState
+    ) {
       return;
     }
 
+    let isCancelled = false;
+    const fallbackCareDayState = careDayState;
+
     async function refreshFromCloud() {
+      const refreshSequence = ++cloudRefreshSequenceRef.current;
       const now = new Date();
       const fallbackData: MedTrackSyncData = {
         medications,
@@ -2670,7 +2760,8 @@ export default function MedTrackApp() {
         deletedLogIds,
         categories,
         routineCategories,
-        careDayKey,
+        careDayState: fallbackCareDayState,
+        careDayKey: fallbackCareDayState.key,
         reminderSettings,
         personalPlanVersion: PERSONAL_PLAN_VERSION,
         updatedAt: new Date().toISOString(),
@@ -2682,6 +2773,13 @@ export default function MedTrackApp() {
           readCloudHealthData(healthData),
         ]);
 
+        if (
+          isCancelled ||
+          refreshSequence !== cloudRefreshSequenceRef.current
+        ) {
+          return;
+        }
+
         if (!cloudResult.configured) {
           setIsCloudConfigured(false);
           setSyncStatus("not-configured");
@@ -2689,13 +2787,24 @@ export default function MedTrackApp() {
           return;
         }
 
-        setMedications(cloudResult.data.medications);
-        setLogs(cloudResult.data.logs);
-        setDeletedLogIds(cloudResult.data.deletedLogIds);
-        setCategories(cloudResult.data.categories);
-        setRoutineCategories(cloudResult.data.routineCategories);
-        setCareDayKey(cloudResult.data.careDayKey);
-        setReminderSettings(cloudResult.data.reminderSettings);
+        const latestCareDayState =
+          selectCareDayState(
+            cloudResult.data.careDayState,
+            careDayStateRef.current,
+          ) ?? cloudResult.data.careDayState;
+        const syncData: MedTrackSyncData = {
+          ...cloudResult.data,
+          careDayState: latestCareDayState,
+          careDayKey: latestCareDayState.key,
+        };
+
+        setMedications(syncData.medications);
+        setLogs(syncData.logs);
+        setDeletedLogIds(syncData.deletedLogIds);
+        setCategories(syncData.categories);
+        setRoutineCategories(syncData.routineCategories);
+        replaceCareDayState(syncData.careDayState);
+        setReminderSettings(syncData.reminderSettings);
         setHealthData(healthResult.data);
         setIsHealthCloudConfigured(healthResult.configured);
         setHealthSyncStatus(
@@ -2703,10 +2812,16 @@ export default function MedTrackApp() {
         );
         setSyncStatus("synced");
         setSyncMessage("Cloud sync is active");
-        setLastCloudSyncAt(cloudResult.data.updatedAt);
-        writeLocalSyncData(cloudResult.data);
+        setLastCloudSyncAt(syncData.updatedAt);
+        writeLocalSyncData(syncData);
         writeLocalHealthData(healthResult.data);
       } catch {
+        if (
+          isCancelled ||
+          refreshSequence !== cloudRefreshSequenceRef.current
+        ) {
+          return;
+        }
         setSyncStatus("error");
         setHealthSyncStatus("error");
         setSyncMessage("Could not refresh cloud data");
@@ -2727,11 +2842,13 @@ export default function MedTrackApp() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      isCancelled = true;
+      cloudRefreshSequenceRef.current += 1;
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [
-    careDayKey,
+    careDayState,
     categories,
     deletedLogIds,
     healthData,
@@ -2740,6 +2857,7 @@ export default function MedTrackApp() {
     isStorageReady,
     logs,
     medications,
+    replaceCareDayState,
     reminderSettings,
     routineCategories,
   ]);
@@ -2748,13 +2866,17 @@ export default function MedTrackApp() {
     const intervalId = window.setInterval(() => {
       const now = new Date();
       setToday(now);
-      setCareDayKey((currentCareDayKey) =>
-        resolveCareDayKey(currentCareDayKey, now),
-      );
+      const currentState = careDayStateRef.current;
+      if (!currentState) return;
+
+      const resolvedKey = resolveCareDayKey(currentState.key, now);
+      if (resolvedKey !== currentState.key) {
+        moveToCareDay(resolvedKey, now);
+      }
     }, 60 * 1000);
 
     return () => window.clearInterval(intervalId);
-  }, []);
+  }, [moveToCareDay]);
 
   useEffect(() => {
     if (categories.length === 0) {
@@ -3496,7 +3618,6 @@ export default function MedTrackApp() {
         return;
       }
 
-      setIsAuthenticated(true);
       setUsername("");
       setPassword("");
       setSyncStatus("loading");
@@ -3516,7 +3637,7 @@ export default function MedTrackApp() {
         setDeletedLogIds(cloudResult.data.deletedLogIds);
         setCategories(cloudResult.data.categories);
         setRoutineCategories(cloudResult.data.routineCategories);
-        setCareDayKey(cloudResult.data.careDayKey);
+        replaceCareDayState(cloudResult.data.careDayState);
         setReminderSettings(cloudResult.data.reminderSettings);
         setHealthData(healthResult.data);
         setIsCloudConfigured(cloudResult.configured);
@@ -3543,6 +3664,7 @@ export default function MedTrackApp() {
         );
       }
 
+      setIsAuthenticated(true);
       toast.success("Welcome back to MedTrack");
     } catch {
       toast.error("Could not sign in. Check your connection and try again.");
@@ -3561,33 +3683,28 @@ export default function MedTrackApp() {
     toast.success("Signed out");
   }
 
-  function handleEndCareDay() {
-    if (!todayKey) {
+  function completeCareDayEnd(
+    expectedState: CareDayState,
+    nextCareDayKey: string,
+  ) {
+    const currentState = careDayStateRef.current;
+    if (
+      !currentState ||
+      currentState.revision !== expectedState.revision ||
+      currentState.mutationId !== expectedState.mutationId
+    ) {
+      toast.error("The care day changed while confirmation was open");
+      return;
+    }
+
+    const now = new Date();
+    const advancedState = moveToCareDay(nextCareDayKey, now);
+    if (!advancedState) {
       toast.error("The care day is still loading");
       return;
     }
 
-    const actualTodayKey =
-      tehranDateKey(today ?? new Date()) ??
-      getDefaultCareDayKey(today ?? new Date());
-
-    if (todayKey >= actualTodayKey) {
-      toast.error("Today is already the current care day");
-      return;
-    }
-
-    if (
-      pendingCareDayCount > 0 &&
-      !window.confirm(
-        `End this care day with ${pendingCareDayCount} pending item(s)? You can undo immediately after.`,
-      )
-    ) {
-      return;
-    }
-
-    const previousCareDayKey = todayKey;
-    const nextCareDayKey = getNextCareDayKey(todayKey);
-    setCareDayKey(nextCareDayKey);
+    setToday(now);
     notifiedReminderKeys.current.clear();
     toast.success(`Care day moved to ${
       formatDateKey(nextCareDayKey, { month: "short", day: "numeric" }) ??
@@ -3595,9 +3712,45 @@ export default function MedTrackApp() {
     }`, {
       action: {
         label: "Undo",
-        onClick: () => setCareDayKey(previousCareDayKey),
+        onClick: () => {
+          const latestState = careDayStateRef.current;
+          if (latestState?.mutationId !== advancedState.mutationId) {
+            toast.error("Undo is no longer available after another day change");
+            return;
+          }
+
+          moveToCareDay(expectedState.key);
+          notifiedReminderKeys.current.clear();
+        },
       },
     });
+  }
+
+  function handleEndCareDay() {
+    const currentState = careDayStateRef.current;
+    if (!todayKey || !currentState) {
+      toast.error("The care day is still loading");
+      return;
+    }
+
+    const now = new Date();
+    const nextCareDayKey = nextCareDayKeyAfterManualEnd(todayKey, now);
+
+    if (!nextCareDayKey) {
+      toast.error("The next care day is already open");
+      return;
+    }
+
+    if (pendingCareDayCount > 0) {
+      setCareDayEndConfirmation({
+        expectedState: currentState,
+        nextKey: nextCareDayKey,
+        pendingCount: pendingCareDayCount,
+      });
+      return;
+    }
+
+    completeCareDayEnd(currentState, nextCareDayKey);
   }
 
   async function handleEnableNotifications() {
@@ -4205,10 +4358,6 @@ export default function MedTrackApp() {
     const occurrenceCareDayKey = careDayKeyForInstant(now);
     const dedupeKey = `${entry.medication.id}:${occurrenceCareDayKey}:lapse`;
 
-    if (entry.dateKey !== occurrenceCareDayKey) {
-      setCareDayKey(occurrenceCareDayKey);
-    }
-
     if (recordedAvoidanceKeys.current.has(dedupeKey)) {
       return;
     }
@@ -4687,8 +4836,85 @@ export default function MedTrackApp() {
         </section>
       </div>
 
+      {careDayEndConfirmation && (
+        <CareDayEndDialog
+          pendingCount={careDayEndConfirmation.pendingCount}
+          onCancel={() => setCareDayEndConfirmation(null)}
+          onConfirm={() => {
+            const confirmation = careDayEndConfirmation;
+            setCareDayEndConfirmation(null);
+            completeCareDayEnd(
+              confirmation.expectedState,
+              confirmation.nextKey,
+            );
+          }}
+        />
+      )}
+
       <MobileNavigation activeTab={activeTab} onChange={handleTabChange} />
     </main>
+  );
+}
+
+function CareDayEndDialog({
+  pendingCount,
+  onCancel,
+  onConfirm,
+}: {
+  pendingCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-950/45 p-4 backdrop-blur-sm"
+      role="presentation"
+    >
+      <section
+        className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-2xl sm:p-6"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="end-care-day-title"
+        aria-describedby="end-care-day-description"
+      >
+        <div className="flex items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-800">
+            <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <div>
+            <h2 id="end-care-day-title" className="text-lg font-semibold">
+              End this care day?
+            </h2>
+            <p
+              id="end-care-day-description"
+              className="mt-1 text-sm leading-6 text-zinc-600"
+            >
+              {pendingCount} unfinished {pendingCount === 1 ? "item" : "items"}
+              {" "}will remain only in the closed day. The new Care Day starts
+              with zero completed outcomes.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-2 sm:grid-cols-2">
+          <button
+            className="inline-flex min-h-11 items-center justify-center rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+            type="button"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className="inline-flex min-h-11 items-center justify-center rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+            type="button"
+            onClick={onConfirm}
+            autoFocus
+          >
+            End and start new day
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -4957,7 +5183,7 @@ function MoreView({
           onClick={onEndCareDay}
         >
           <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-          End previous care day
+          End care day
         </button>
         <button
           className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"

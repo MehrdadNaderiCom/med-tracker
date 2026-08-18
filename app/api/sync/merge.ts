@@ -1,3 +1,8 @@
+import {
+  normalizeCareDayState,
+  selectCareDayState,
+} from "../../care-day-state";
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -211,6 +216,18 @@ export function mergePrimarySyncData(
   savedAt: string,
 ) {
   const existing = isRecord(existingValue) ? existingValue : {};
+  const existingCareDayState = normalizeCareDayState(
+    existing.careDayState,
+    existing.careDayKey,
+  );
+  const incomingCareDayState = normalizeCareDayState(
+    incomingValue.careDayState,
+    incomingValue.careDayKey,
+  );
+  const careDayState = selectCareDayState(
+    existingCareDayState,
+    incomingCareDayState,
+  );
   const deletedLogIds = Array.from(
     new Set([
       ...normalizeIdList(existing.deletedLogIds),
@@ -253,6 +270,12 @@ export function mergePrimarySyncData(
 
   if (mergedPlanVersion !== null) {
     mergedData.personalPlanVersion = mergedPlanVersion;
+  }
+
+  if (careDayState) {
+    mergedData.careDayState = careDayState;
+    // Keep the legacy mirror until every deployed client understands revisions.
+    mergedData.careDayKey = careDayState.key;
   }
 
   return mergedData;

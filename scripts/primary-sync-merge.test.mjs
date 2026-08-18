@@ -5,6 +5,17 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const mergeModuleUrl = new URL("../app/api/sync/merge.ts", import.meta.url);
+const careDayModuleUrl = new URL("../app/care-day-state.ts", import.meta.url);
+const compiledCareDayModule = ts.transpileModule(
+  readFileSync(careDayModuleUrl, "utf8"),
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: careDayModuleUrl.pathname,
+  },
+).outputText;
 const compiledMergeModule = ts.transpileModule(
   readFileSync(mergeModuleUrl, "utf8"),
   {
@@ -15,11 +26,26 @@ const compiledMergeModule = ts.transpileModule(
     fileName: mergeModuleUrl.pathname,
   },
 ).outputText;
+const careDayModule = { exports: {} };
 const testModule = { exports: {} };
+
+vm.runInNewContext(compiledCareDayModule, {
+  exports: careDayModule.exports,
+  module: careDayModule,
+  Date,
+  Number,
+});
 
 vm.runInNewContext(compiledMergeModule, {
   exports: testModule.exports,
   module: testModule,
+  require(specifier) {
+    if (specifier === "../../care-day-state") {
+      return careDayModule.exports;
+    }
+
+    throw new Error(`Unexpected test dependency: ${specifier}`);
+  },
 });
 
 const { mergePrimarySyncData } = testModule.exports;
@@ -163,4 +189,56 @@ test("invalid versions cannot erase a stored version and tombstones still win", 
   assert.equal(merged.personalPlanVersion, 6);
   assert.equal(findById(merged.logs, "deleted-lapse"), undefined);
   assert.deepEqual(Array.from(merged.deletedLogIds), ["deleted-lapse"]);
+});
+
+test("a stale client cannot move the server Care Day backward", () => {
+  const currentCareDayState = {
+    key: "2026-08-18",
+    revision: 1,
+    mutationId: "2026-08-18T05:15:00.000Z:end",
+  };
+  const merged = mergePrimarySyncData(
+    {
+      careDayState: currentCareDayState,
+      careDayKey: currentCareDayState.key,
+    },
+    {
+      careDayKey: "2026-08-17",
+      medications: [{ id: "new-medication", name: "Still merge other data" }],
+    },
+    "2026-08-18T05:16:00.000Z",
+  );
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(merged.careDayState)),
+    currentCareDayState,
+  );
+  assert.equal(merged.careDayKey, "2026-08-18");
+  assert.equal(findById(merged.medications, "new-medication").name, "Still merge other data");
+});
+
+test("a newer revision can intentionally undo a Care Day change", () => {
+  const undoState = {
+    key: "2026-08-17",
+    revision: 2,
+    mutationId: "2026-08-18T05:17:00.000Z:undo",
+  };
+  const merged = mergePrimarySyncData(
+    {
+      careDayState: {
+        key: "2026-08-18",
+        revision: 1,
+        mutationId: "2026-08-18T05:15:00.000Z:end",
+      },
+      careDayKey: "2026-08-18",
+    },
+    {
+      careDayState: undoState,
+      careDayKey: undoState.key,
+    },
+    "2026-08-18T05:18:00.000Z",
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(merged.careDayState)), undoState);
+  assert.equal(merged.careDayKey, "2026-08-17");
 });

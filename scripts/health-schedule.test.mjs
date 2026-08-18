@@ -33,6 +33,7 @@ const {
   entryCareDayKey,
   evaluateBloodPressurePlan,
   evaluateHealthTasks,
+  nextCareDayKeyAfterManualEnd,
 } = scheduleModule.exports;
 
 const atTehran = (localIso) => `${localIso}+03:30`;
@@ -79,6 +80,27 @@ test("Care Day date math remains calendar-safe", () => {
   assert.equal(addCareDays("2026-08-31", 1), "2026-09-01");
   assert.equal(addCareDays("2026-03-21", -1), "2026-03-20");
   assert.equal(diffCareDays("2026-09-02", "2026-08-31"), 2);
+});
+
+test("manual Care Day close opens a fresh day exactly once", () => {
+  const evening = atTehran("2026-08-18T20:00:00");
+  assert.equal(
+    nextCareDayKeyAfterManualEnd("2026-08-18", evening),
+    "2026-08-19",
+    "the current Care Day can be ended after noon",
+  );
+  assert.equal(
+    nextCareDayKeyAfterManualEnd("2026-08-19", evening),
+    null,
+    "a repeated click cannot skip another Care Day",
+  );
+
+  const beforeNoon = atTehran("2026-08-19T01:00:00");
+  assert.equal(
+    nextCareDayKeyAfterManualEnd("2026-08-18", beforeNoon),
+    "2026-08-19",
+    "manual close also works before the automatic noon rollover",
+  );
 });
 
 test("stored Care Day wins while legacy instants are derived", () => {

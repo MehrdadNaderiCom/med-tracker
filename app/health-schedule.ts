@@ -329,6 +329,25 @@ export function addCareDays(dateKey: string, amount: number): string {
   return value.toISOString().slice(0, 10);
 }
 
+/**
+ * Advances a manually closed Care Day once, without allowing repeated clicks
+ * to move the checklist more than one Care Day ahead of the Tehran clock.
+ */
+export function nextCareDayKeyAfterManualEnd(
+  currentCareDayKey: string,
+  now: Date | string,
+  timeZone = HEALTH_TIME_ZONE,
+): string | null {
+  if (!validDateKey(currentCareDayKey)) {
+    return null;
+  }
+
+  const automaticCareDayKey = careDayKeyForInstant(now, timeZone);
+  return currentCareDayKey > automaticCareDayKey
+    ? null
+    : addCareDays(currentCareDayKey, 1);
+}
+
 /** Positive when laterKey occurs after earlierKey. */
 export function diffCareDays(laterKey: string, earlierKey: string): number {
   if (!validDateKey(laterKey) || !validDateKey(earlierKey)) {
