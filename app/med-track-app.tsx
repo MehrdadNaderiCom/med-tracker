@@ -4613,7 +4613,7 @@ export default function MedTrackApp() {
   return (
     <main className="min-h-[100dvh] bg-[#f5faf8] text-zinc-950">
       <div className="lg:grid lg:min-h-screen lg:grid-cols-[17rem_1fr]">
-        <aside className="safe-area-top border-b border-emerald-100 bg-white px-4 py-3 lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
+        <aside className="safe-area-top border-b border-emerald-100 bg-white px-4 py-3 lg:sticky lg:top-0 lg:flex lg:h-[100dvh] lg:flex-col lg:overflow-y-auto lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
           <div className="flex items-center justify-between gap-4 lg:block">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-700/20">
@@ -4663,7 +4663,7 @@ export default function MedTrackApp() {
             })}
           </nav>
 
-          <div className="hidden lg:block">
+          <div className="mt-auto hidden lg:block">
             <SyncStatusPanel
               syncStatus={syncStatus}
               syncMessage={syncMessage}
@@ -4911,7 +4911,7 @@ function CareDayEndDialog({
             onClick={onConfirm}
             autoFocus
           >
-            End and start new day
+            <span className="whitespace-nowrap">End and start new day</span>
           </button>
           <button
             className="inline-flex min-h-12 w-full items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
@@ -5150,14 +5150,14 @@ function MoreView({
     <div className="mx-auto max-w-3xl">
       <PageHeader title="More" description="History, settings, sync, and account" />
 
-      <section className="grid gap-3 sm:grid-cols-3">
+      <section className="grid gap-3 md:grid-cols-3">
         {actions.map((action) => {
           const Icon = action.icon;
 
           return (
             <button
               key={action.tab}
-              className="flex min-h-20 items-center gap-3 rounded-lg border border-zinc-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
+              className="flex min-h-20 items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50"
               type="button"
               onClick={() => onNavigate(action.tab)}
             >
@@ -5887,21 +5887,21 @@ function RoutineChecklistSection({
               <div className="grid gap-2 sm:flex sm:shrink-0">
                 {group.takenCount > 0 && (
                   <button
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 sm:w-auto"
+                    className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-xs font-semibold whitespace-nowrap text-zinc-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 sm:w-auto"
                     type="button"
                     onClick={() => onUndoGroupTaken(group.entries)}
                   >
-                    <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                    <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     Undo Step {group.order}
                   </button>
                 )}
                 {!group.isTaken && (
                   <button
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 sm:w-auto"
+                    className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-600 px-3 py-2.5 text-xs font-semibold whitespace-nowrap text-white transition hover:bg-emerald-700 sm:w-auto"
                     type="button"
                     onClick={() => onMarkGroupAsTaken(group.entries)}
                   >
-                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                    <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     Mark Step {group.order}
                   </button>
                 )}
@@ -6111,7 +6111,7 @@ function MedicationListView({
 
                 <div className="flex shrink-0 gap-2">
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
                     type="button"
                     onClick={() => onEdit(medication)}
                     title="Edit medication"
@@ -6120,7 +6120,7 @@ function MedicationListView({
                     <Edit3 className="h-4 w-4" aria-hidden="true" />
                   </button>
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                     type="button"
                     onClick={() => onDelete(medication)}
                     title="Remove from daily list (keeps history)"
@@ -6444,14 +6444,14 @@ function MedicationFormView({
           </div>
 
           {form.dayMode === "weekdays" && (
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+            <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-7">
               {WEEK_DAYS.map((day) => {
                 const isSelected = form.days.includes(day.id);
 
                 return (
                   <button
                     key={day.id}
-                    className={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
+                    className={`inline-flex min-h-11 items-center justify-center rounded-xl border px-2 py-2.5 text-xs font-semibold transition sm:text-sm ${
                       isSelected
                         ? "border-emerald-600 bg-emerald-600 text-white"
                         : "border-zinc-200 text-zinc-600 hover:border-emerald-200 hover:bg-emerald-50"
@@ -6487,7 +6487,7 @@ function MedicationFormView({
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
           {form.id && (
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+              className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50 sm:w-auto"
               type="button"
               onClick={onCancelEdit}
             >
@@ -6496,7 +6496,7 @@ function MedicationFormView({
             </button>
           )}
           <button
-            className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+            className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 sm:w-auto"
             type="submit"
           >
             <Save className="h-4 w-4" aria-hidden="true" />
@@ -6617,7 +6617,7 @@ function HistoryView({
                   </p>
                 </div>
                 <button
-                  className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition ${
+                  className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition sm:w-auto ${
                     entry.isTaken
                       ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
                       : "bg-emerald-600 text-white hover:bg-emerald-700"
@@ -6626,7 +6626,7 @@ function HistoryView({
                   disabled={entry.isTaken}
                   onClick={() => onMarkPastAsTaken(entry, selectedDate)}
                 >
-                  <Check className="h-4 w-4" aria-hidden="true" />
+                  <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
                   {entry.isTaken ? "Logged" : "Backfill"}
                 </button>
               </div>
@@ -6717,7 +6717,7 @@ function HistoryView({
                     {formatLogDate(log.takenAt)}
                   </time>
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                     type="button"
                     onClick={() => onDeleteLog(log)}
                     title="Delete log"
@@ -6834,7 +6834,7 @@ function SettingsView({
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
               {categoryForm.id && (
                 <button
-                  className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50 sm:w-auto"
                   type="button"
                   onClick={onCancelCategoryEdit}
                 >
@@ -6843,7 +6843,7 @@ function SettingsView({
                 </button>
               )}
               <button
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 sm:w-auto"
                 type="submit"
               >
                 <Save className="h-4 w-4" aria-hidden="true" />
@@ -6861,7 +6861,7 @@ function SettingsView({
                 <CategoryBadge categoryId={category.id} categories={categories} />
                 <div className="flex gap-2">
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
                     type="button"
                     onClick={() => onEditCategory(category)}
                     title="Edit category"
@@ -6870,7 +6870,7 @@ function SettingsView({
                     <Edit3 className="h-4 w-4" aria-hidden="true" />
                   </button>
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                     type="button"
                     onClick={() => onDeleteCategory(category)}
                     title="Delete category"
@@ -6942,7 +6942,7 @@ function SettingsView({
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
               {routineCategoryForm.id && (
                 <button
-                  className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50 sm:w-auto"
                   type="button"
                   onClick={onCancelRoutineCategoryEdit}
                 >
@@ -6951,7 +6951,7 @@ function SettingsView({
                 </button>
               )}
               <button
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 sm:w-auto"
                 type="submit"
               >
                 <Save className="h-4 w-4" aria-hidden="true" />
@@ -6976,7 +6976,7 @@ function SettingsView({
                 </div>
                 <div className="flex gap-2">
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-800"
                     type="button"
                     onClick={() => onEditRoutineCategory(category)}
                     title="Edit routine category"
@@ -6985,7 +6985,7 @@ function SettingsView({
                     <Edit3 className="h-4 w-4" aria-hidden="true" />
                   </button>
                   <button
-                    className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                     type="button"
                     onClick={() => onDeleteRoutineCategory(category)}
                     title="Delete routine category"
@@ -7017,19 +7017,19 @@ function SettingsView({
               </p>
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
               <button
-                className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 px-4 py-2.5 text-sm font-semibold whitespace-nowrap text-emerald-700 transition hover:bg-emerald-50 sm:w-auto"
                 type="button"
                 onClick={onEnableNotifications}
                 disabled={notificationPermission === "granted"}
               >
-                <BellRing className="h-4 w-4" aria-hidden="true" />
+                <BellRing className="h-4 w-4 shrink-0" aria-hidden="true" />
                 {notificationPermission === "granted"
                   ? "Permission granted"
                   : "Enable browser notifications"}
               </button>
-              <label className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700">
+              <label className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 px-4 py-2.5 text-sm font-semibold whitespace-nowrap text-zinc-700 sm:w-auto">
                 <input
                   className="h-4 w-4 accent-emerald-600"
                   type="checkbox"
@@ -7093,7 +7093,7 @@ function TonePicker({
           return (
             <button
               key={tone}
-              className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
+              className={`flex h-11 w-11 items-center justify-center rounded-xl border transition ${
                 isSelected
                   ? "border-emerald-600 bg-emerald-50"
                   : "border-zinc-200 hover:border-emerald-200"
@@ -7839,7 +7839,7 @@ function AdherenceChartCard({
             return (
               <button
                 key={range.id}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex min-h-11 items-center rounded-xl px-3 py-2 text-sm font-semibold transition ${
                   isSelected
                     ? "bg-emerald-600 text-white shadow-sm"
                     : "border border-zinc-200 bg-white text-zinc-600 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-800"
@@ -8111,7 +8111,7 @@ function EmptyState({
       <p className="mt-1 max-w-sm text-sm text-zinc-500">{description}</p>
       {actionLabel && onAction && (
         <button
-          className="mt-5 inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+          className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
           type="button"
           onClick={onAction}
         >

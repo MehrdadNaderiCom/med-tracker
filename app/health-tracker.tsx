@@ -84,7 +84,7 @@ const LABEL_CLASS = "mb-1.5 block text-sm font-medium text-zinc-700";
 const CARD_CLASS =
   "rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5";
 const PRIMARY_BUTTON_CLASS =
-  "inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-200 disabled:cursor-not-allowed disabled:bg-zinc-300 sm:w-auto";
+  "inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-center text-sm font-semibold leading-snug text-white transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-200 disabled:cursor-not-allowed disabled:bg-zinc-300 sm:w-auto";
 
 const EMERGENCY_SYMPTOMS: {
   id: BloodPressureEmergencySymptom;
@@ -2313,10 +2313,10 @@ function BloodPressureForm({
         </fieldset>
       </div>
 
-      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+      <div className="mt-3 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         {!savedPartial ? (
           <button className={PRIMARY_BUTTON_CLASS} type="submit" disabled={saving}>
-            <Plus className="h-4 w-4" aria-hidden="true" />
+            <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />
             {saving ? "Saving…" : "Save reading 1 & start 60s"}
           </button>
         ) : (
@@ -2327,7 +2327,7 @@ function BloodPressureForm({
               disabled={saving || !secondReady || pairWindowExpired}
               onClick={() => void saveSecond()}
             >
-              <Plus className="h-4 w-4" aria-hidden="true" />
+              <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />
               {saving
                 ? "Saving…"
                 : pairWindowExpired
@@ -2338,7 +2338,7 @@ function BloodPressureForm({
             </button>
             <button
               type="button"
-              className="min-h-11 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-700"
+              className="inline-flex min-h-11 w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-center text-sm font-semibold leading-snug text-zinc-700 sm:w-auto"
               onClick={() => void keepSingleReading()}
             >
               Keep one & start new later
@@ -2416,11 +2416,11 @@ function BloodPressureForm({
           {EMERGENCY_SYMPTOMS.map((symptom) => (
             <label
               key={symptom.id}
-              className="flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
+              className="flex min-h-11 items-start gap-2 rounded-xl border border-zinc-200 px-3 py-2.5 text-sm leading-5 text-zinc-700"
             >
               <input
                 type="checkbox"
-                className="h-4 w-4 accent-rose-600"
+                className="mt-0.5 h-4 w-4 shrink-0 accent-rose-600"
                 checked={symptoms.includes(symptom.id)}
                 onChange={() => toggleSymptom(symptom.id)}
               />
@@ -2483,9 +2483,10 @@ function BloodPressureForm({
           </label>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm">
+          <label className="flex min-h-11 items-start gap-2 rounded-xl border border-zinc-200 px-3 py-2.5 text-sm leading-5 sm:col-span-2">
             <input
               type="checkbox"
+              className="mt-0.5 shrink-0"
               checked={standardConditions === true}
               onChange={(event) => {
                 setStandardConditions(event.target.checked);
@@ -2501,17 +2502,19 @@ function BloodPressureForm({
             Full standard protocol followed (pre-check preparation, empty bladder,
             5-min rest, bare arm, supported, quiet)
           </label>
-          <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm">
+          <label className="flex min-h-11 items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-sm">
             <input
               type="checkbox"
+              className="shrink-0"
               checked={triggeredBySymptoms}
               onChange={(event) => setTriggeredBySymptoms(event.target.checked)}
             />
             Measured because of symptoms
           </label>
-          <label className="flex min-h-11 items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm">
+          <label className="flex min-h-11 items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-sm">
             <input
               type="checkbox"
+              className="shrink-0"
               checked={irregularHeartbeat === true}
               onChange={(event) => setIrregularHeartbeat(event.target.checked)}
             />
@@ -5568,7 +5571,7 @@ export function HealthTracker({
                   key={option.id}
                   type="button"
                   aria-pressed={exerciseReportRange === option.id}
-                  className={`min-h-10 rounded-md px-3 py-2 text-sm font-semibold transition ${
+                  className={`inline-flex min-h-11 items-center rounded-xl px-3 py-2 text-sm font-semibold transition ${
                     exerciseReportRange === option.id
                       ? "bg-emerald-600 text-white"
                       : "text-zinc-600 hover:bg-zinc-50"
