@@ -4833,21 +4833,21 @@ export function HealthTracker({
   return (
     <section className="space-y-5 pb-24 text-zinc-950" aria-labelledby="health-title">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
             Health tracking
           </p>
-          <h1 id="health-title" className="mt-1 text-2xl font-semibold tracking-tight">
+          <h1 id="health-title" className="mt-1 text-balance text-2xl font-semibold tracking-tight">
             Weight, pressure, waist, and activity
           </h1>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-zinc-500">
+          <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-zinc-500">
             A measurement and habit record for discussing care with your clinician —
             not a diagnosis or medication dosing tool.
           </p>
         </div>
-        <span className="inline-flex w-fit items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-600">
-          <CalendarDays className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-          Care Day {todayKey} · closes at noon
+        <span className="inline-flex w-fit max-w-full items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-600">
+          <CalendarDays className="h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
+          <span className="truncate">Care Day {todayKey} · closes at noon</span>
         </span>
       </header>
 

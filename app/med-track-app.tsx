@@ -4550,14 +4550,14 @@ export default function MedTrackApp() {
 
   if (!isAuthenticated) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#f5faf8] px-4 py-10 text-zinc-950">
-        <section className="w-full max-w-md rounded-lg border border-emerald-100 bg-white p-6 shadow-sm sm:p-8">
+      <main className="safe-area-inset flex min-h-[100dvh] items-center justify-center bg-[#f5faf8] px-4 py-10 text-zinc-950">
+        <section className="w-full max-w-md rounded-2xl border border-emerald-100 bg-white p-6 shadow-sm sm:p-8">
           <div className="mb-8 flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-600 text-white">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-sm shadow-emerald-700/20">
               <HeartPulse className="h-6 w-6" aria-hidden="true" />
             </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-normal text-zinc-950">
+            <div className="min-w-0">
+              <h1 className="text-2xl font-semibold tracking-tight text-zinc-950">
                 MedTrack
               </h1>
               <p className="text-sm text-zinc-500">
@@ -4573,7 +4573,7 @@ export default function MedTrackApp() {
                 Username
               </span>
               <input
-                className="w-full rounded-md border border-zinc-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
                 type="email"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
@@ -4588,7 +4588,7 @@ export default function MedTrackApp() {
                 Password
               </span>
               <input
-                className="w-full rounded-md border border-zinc-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -4598,7 +4598,7 @@ export default function MedTrackApp() {
             </label>
 
             <button
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+              className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-200"
               type="submit"
             >
               <ShieldCheck className="h-4 w-4" aria-hidden="true" />
@@ -4613,17 +4613,17 @@ export default function MedTrackApp() {
   return (
     <main className="min-h-[100dvh] bg-[#f5faf8] text-zinc-950">
       <div className="lg:grid lg:min-h-screen lg:grid-cols-[17rem_1fr]">
-        <aside className="border-b border-emerald-100 bg-white px-4 py-3 lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
+        <aside className="safe-area-top border-b border-emerald-100 bg-white px-4 py-3 lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
           <div className="flex items-center justify-between gap-4 lg:block">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-600 text-white">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-700/20">
                 <HeartPulse className="h-6 w-6" aria-hidden="true" />
               </div>
-              <div>
-                <p className="text-xl font-semibold tracking-normal">
+              <div className="min-w-0">
+                <p className="truncate text-xl font-semibold tracking-tight">
                   MedTrack
                 </p>
-                <p className="text-xs text-zinc-500">{todayLabel}</p>
+                <p className="truncate text-xs text-zinc-500">{todayLabel}</p>
               </div>
             </div>
 
@@ -4675,7 +4675,7 @@ export default function MedTrackApp() {
 
         <section
           ref={pageContentRef}
-          className="px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:py-8"
+          className="px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:py-8 lg:pb-8"
         >
           {activeTab === "dashboard" && (
             <DashboardView
@@ -4865,52 +4865,60 @@ function CareDayEndDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const pendingLabel =
+    pendingCount === 1 ? "1 unfinished item" : `${pendingCount} unfinished items`;
+
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-950/45 p-4 backdrop-blur-sm"
+      className="safe-area-inset fixed inset-0 z-[70] flex items-end justify-center bg-zinc-950/50 p-3 backdrop-blur-sm sm:items-center sm:p-6"
       role="presentation"
+      onClick={onCancel}
     >
       <section
-        className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-2xl sm:p-6"
+        className="w-full max-w-md rounded-2xl border border-zinc-200/90 bg-white p-5 shadow-2xl shadow-zinc-950/15 sm:p-6"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="end-care-day-title"
         aria-describedby="end-care-day-description"
+        onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start gap-3">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-800">
-            <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
-          </span>
-          <div>
-            <h2 id="end-care-day-title" className="text-lg font-semibold">
-              End this care day?
-            </h2>
-            <p
-              id="end-care-day-description"
-              className="mt-1 text-sm leading-6 text-zinc-600"
-            >
-              {pendingCount} unfinished {pendingCount === 1 ? "item" : "items"}
-              {" "}will remain only in the closed day. The new Care Day starts
-              with zero completed outcomes.
-            </p>
-          </div>
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-800 sm:mx-0">
+          <CheckCircle2 className="h-6 w-6" aria-hidden="true" />
         </div>
 
-        <div className="mt-6 grid gap-2 sm:grid-cols-2">
-          <button
-            className="inline-flex min-h-11 items-center justify-center rounded-md border border-zinc-200 px-4 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
-            type="button"
-            onClick={onCancel}
+        <div className="text-center sm:text-left">
+          <h2
+            id="end-care-day-title"
+            className="text-balance text-xl font-semibold tracking-tight text-zinc-950"
           >
-            Cancel
-          </button>
+            End this care day?
+          </h2>
+          <p
+            id="end-care-day-description"
+            className="mt-2 text-pretty text-sm leading-6 text-zinc-600"
+          >
+            <span className="font-semibold text-zinc-800">{pendingLabel}</span>
+            {" "}
+            will remain only in the closed day. The new Care Day starts with
+            zero completed outcomes.
+          </p>
+        </div>
+
+        <div className="mt-6 flex flex-col gap-2.5">
           <button
-            className="inline-flex min-h-11 items-center justify-center rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm shadow-emerald-700/20 transition hover:bg-emerald-700"
             type="button"
             onClick={onConfirm}
             autoFocus
           >
             End and start new day
+          </button>
+          <button
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+            type="button"
+            onClick={onCancel}
+          >
+            Cancel
           </button>
         </div>
       </section>
@@ -4929,7 +4937,7 @@ function MobileNavigation({
 
   return (
     <nav
-      className="safe-area-bottom fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white/95 px-2 pt-2 shadow-[0_-8px_24px_rgba(24,31,28,0.08)] backdrop-blur lg:hidden"
+      className="safe-area-bottom fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200/90 bg-white/95 px-2 pt-1.5 shadow-[0_-8px_24px_rgba(24,31,28,0.08)] backdrop-blur-xl lg:hidden"
       aria-label="Mobile navigation"
     >
       <div className="mx-auto grid max-w-lg grid-cols-5 gap-1">
@@ -4943,7 +4951,7 @@ function MobileNavigation({
           return (
             <button
               key={tab.id}
-              className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-[11px] font-semibold transition ${
+              className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1.5 text-[11px] font-semibold transition ${
                 isActive
                   ? "bg-emerald-50 text-emerald-800"
                   : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800"
@@ -4952,8 +4960,8 @@ function MobileNavigation({
               onClick={() => onChange(tab.id)}
               aria-current={isActive ? "page" : undefined}
             >
-              <Icon className="h-5 w-5" aria-hidden="true" />
-              <span>{tab.label}</span>
+              <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+              <span className="max-w-full truncate leading-none">{tab.label}</span>
             </button>
           );
         })}
@@ -5045,7 +5053,7 @@ function DashboardHealthCard({
 
   return (
     <button
-      className={`mb-3 w-full rounded-lg border p-4 text-left shadow-sm transition hover:shadow-md ${
+      className={`mb-3 w-full rounded-2xl border p-4 text-left shadow-sm transition hover:shadow-md ${
         severe
           ? "border-rose-300 bg-rose-50"
           : "border-sky-200 bg-gradient-to-br from-white to-sky-50"
@@ -5054,34 +5062,34 @@ function DashboardHealthCard({
       onClick={onOpenHealth}
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
             <HeartPulse
-              className={`h-5 w-5 ${severe ? "text-rose-700" : "text-sky-700"}`}
+              className={`h-5 w-5 shrink-0 ${severe ? "text-rose-700" : "text-sky-700"}`}
               aria-hidden="true"
             />
             <h2 className="font-semibold text-zinc-950">
               {severe ? "Urgent health review" : "Health check-in"}
             </h2>
           </div>
-          <p className="mt-1 text-sm text-zinc-600">
+          <p className="mt-1 text-pretty text-sm leading-5 text-zinc-600">
             {tasks.length > 0 ? tasks.join(" · ") : "No health checks due now"}
           </p>
         </div>
-        <span className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-sky-800 shadow-sm">
+        <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-sky-800 shadow-sm">
           Open
         </span>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-        <div className="rounded-md bg-white/80 p-2.5">
+        <div className="rounded-xl bg-white/80 p-2.5">
           <span className="text-xs text-zinc-500">Latest weight</span>
-          <strong className="mt-0.5 block text-zinc-950">
+          <strong className="mt-0.5 block truncate text-zinc-950">
             {latestWeight ? `${latestWeight.weightKg.toFixed(1)} kg` : "Not recorded"}
           </strong>
         </div>
-        <div className="rounded-md bg-white/80 p-2.5">
+        <div className="rounded-xl bg-white/80 p-2.5">
           <span className="text-xs text-zinc-500">Latest BP average</span>
-          <strong className="mt-0.5 block text-zinc-950">
+          <strong className="mt-0.5 block truncate text-zinc-950">
             {average ? `${average.systolic}/${average.diastolic}` : "Record now"}
           </strong>
           {typeof average?.pulseBpm === "number" ? (
@@ -5176,21 +5184,21 @@ function MoreView({
         lastCloudSyncAt={lastCloudSyncAt}
       />
 
-      <section className="mt-5 space-y-3 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <section className="mt-5 space-y-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
         <button
-          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-zinc-200 px-4 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 px-4 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
           type="button"
           onClick={onEndCareDay}
         >
-          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
           End care day
         </button>
         <button
-          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
+          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-rose-200 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
           type="button"
           onClick={onLogout}
         >
-          <LogOut className="h-4 w-4" aria-hidden="true" />
+          <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
           Log out
         </button>
       </section>
@@ -5322,19 +5330,19 @@ function DashboardView({
         action={
           <div className="hidden gap-2 lg:flex">
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold whitespace-nowrap text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50"
               type="button"
               onClick={onEndCareDay}
             >
-              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
               End care day
             </button>
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold whitespace-nowrap text-white transition hover:bg-emerald-700"
               type="button"
               onClick={onAddMedication}
             >
-              <Plus className="h-4 w-4" aria-hidden="true" />
+              <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />
               Add medication
             </button>
           </div>
@@ -5357,29 +5365,34 @@ function DashboardView({
         />
       )}
 
-      <section className="mb-4 hidden rounded-lg border border-emerald-100 bg-white p-5 shadow-sm sm:block">
+      <section className="mb-4 rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-base font-semibold text-white sm:h-16 sm:w-16 sm:text-xl">
+          <div className="flex items-center gap-3 sm:gap-4">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-lg font-semibold text-white shadow-sm shadow-emerald-700/25 sm:h-16 sm:w-16 sm:text-xl">
               {completionRate}%
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-lg font-semibold text-zinc-950">
+                <h2 className="text-base font-semibold text-zinc-950 sm:text-lg">
                   {careDayLabel}
                 </h2>
-                <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800">
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-800 sm:text-xs">
                   Care day
                 </span>
               </div>
-              <p className="mt-1 hidden max-w-2xl text-sm text-zinc-500 sm:block">
-                Current clock: {currentClockLabel} Iran time. This care day stays open
-                past midnight and rolls over automatically after noon tomorrow,
-                unless you end it manually.
+              <p className="mt-1 text-xs leading-5 text-zinc-500 sm:max-w-2xl sm:text-sm sm:leading-6">
+                <span className="sm:hidden">
+                  {currentClockLabel} Iran · open past midnight
+                </span>
+                <span className="hidden sm:inline">
+                  Current clock: {currentClockLabel} Iran time. This care day stays open
+                  past midnight and rolls over automatically after noon tomorrow,
+                  unless you end it manually.
+                </span>
               </p>
             </div>
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-zinc-100 lg:w-64">
+          <div className="h-2.5 overflow-hidden rounded-full bg-zinc-100 lg:w-64">
             <div
               className="h-full rounded-full bg-emerald-600 transition-all"
               style={{ width: `${completionRate}%` }}
@@ -5397,13 +5410,13 @@ function DashboardView({
         />
         <StatTile
           icon={CheckCircle2}
-          label="Successful today"
+          label="Successful"
           value={takenTodayCount}
           tone="sky"
         />
         <StatTile
           icon={AlarmClock}
-          label="Still pending"
+          label="Pending"
           value={pendingTodayCount}
           tone="rose"
         />
@@ -5415,7 +5428,7 @@ function DashboardView({
         >
           <StatTile
             icon={BarChart3}
-            label="7-day adherence"
+            label="7-day rate"
             value={`${adherenceStats.rate}%`}
             tone="amber"
           />
@@ -5423,17 +5436,17 @@ function DashboardView({
       </div>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[1fr_22rem]">
-        <section className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+        <section className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
           <div className="mb-4 flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-zinc-950">
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold tracking-tight text-zinc-950">
                 Care Checklist
               </h2>
               <p className="text-sm text-zinc-500">
                 {resolvedTodayCount} of {todayMedications.length} outcomes recorded
               </p>
             </div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
               <ClipboardList className="h-5 w-5" aria-hidden="true" />
             </div>
           </div>
@@ -5770,24 +5783,28 @@ function AvoidanceCheckInCard({
                   One tap records what happened. No confirmation is required.
                 </p>
               </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="mt-3 grid gap-2">
                 <button
-                  className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-700"
+                  className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-700"
                   type="button"
                   onClick={() => onRecordLapse(entry)}
                   aria-label="Log hookah use now"
                 >
-                  <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-                  <span dir="auto">I smoked hookah · قلیان کشیدم</span>
+                  <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="text-center leading-snug" dir="auto">
+                    I smoked hookah · قلیان کشیدم
+                  </span>
                 </button>
                 <button
-                  className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-emerald-300 bg-white px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
+                  className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-white px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
                   type="button"
                   onClick={() => onRecordSuccess(entry)}
                   aria-label="Record a hookah-free day"
                 >
-                  <Check className="h-4 w-4" aria-hidden="true" />
-                  End day: I stayed hookah-free
+                  <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="text-center leading-snug">
+                    End day: I stayed hookah-free
+                  </span>
                 </button>
               </div>
             </div>
@@ -5932,14 +5949,14 @@ function MedicationDoseCard({
 
   return (
     <div
-      className={`grid gap-3 rounded-md border p-3 transition sm:grid-cols-[auto_1fr_auto] sm:items-start ${
+      className={`grid gap-3 rounded-xl border p-3 transition sm:grid-cols-[auto_1fr_auto] sm:items-center ${
         entry.isTaken
           ? "border-emerald-200 bg-emerald-50/60"
           : "border-zinc-200 bg-white hover:border-emerald-200"
       }`}
     >
       <div
-        className={`flex h-10 w-10 items-center justify-center rounded-md ${
+        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
           entry.isTaken
             ? "bg-emerald-600 text-white"
             : toneClasses.iconClassName
@@ -5967,7 +5984,7 @@ function MedicationDoseCard({
             categories={categories}
           />
         </div>
-        <p className="mt-1 text-sm text-zinc-600">
+        <p className="mt-1 text-sm leading-5 text-zinc-600">
           {entry.medication.dosage} {entry.medication.unit} -{" "}
           {getEntryScheduleLabel(entry, routineCategories)}
         </p>
@@ -5981,19 +5998,19 @@ function MedicationDoseCard({
         )}
       </div>
 
-      <div className="grid gap-2 sm:w-32">
+      <div className="grid grid-cols-2 gap-2 sm:w-36 sm:grid-cols-1">
         <span
-          className={`inline-flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
+          className={`inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold ${
             entry.isTaken
               ? "bg-emerald-100 text-emerald-800"
               : "bg-zinc-100 text-zinc-600"
           }`}
         >
-          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           {entry.isTaken ? "Taken" : "Pending"}
         </span>
         <button
-          className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-semibold transition ${
+          className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold whitespace-nowrap transition ${
             entry.isTaken
               ? "border border-zinc-200 bg-white text-zinc-700 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
               : "border border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700"
@@ -6003,7 +6020,7 @@ function MedicationDoseCard({
           title={actionLabel}
           aria-label={`${actionLabel} for ${entry.medication.name}`}
         >
-          <ActionIcon className="h-3.5 w-3.5" aria-hidden="true" />
+          <ActionIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           {actionLabel}
         </button>
       </div>
@@ -8002,11 +8019,11 @@ function PageHeader({
 }) {
   return (
     <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-normal text-zinc-950 sm:text-3xl">
+      <div className="min-w-0">
+        <h1 className="text-balance text-2xl font-semibold tracking-tight text-zinc-950 sm:text-3xl">
           {title}
         </h1>
-        <p className="mt-1 text-sm text-zinc-500">{description}</p>
+        <p className="mt-1 text-pretty text-sm text-zinc-500">{description}</p>
       </div>
       {action}
     </header>
@@ -8032,18 +8049,20 @@ function StatTile({
   };
 
   return (
-    <article className="rounded-lg border border-zinc-200 bg-white p-3 shadow-sm sm:p-4">
+    <article className="h-full rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm sm:p-4">
       <div className="flex items-center justify-between gap-2 sm:gap-4">
-        <div>
-          <p className="text-xs font-medium text-zinc-500 sm:text-sm">{label}</p>
-          <p className="mt-1 text-2xl font-semibold tracking-normal text-zinc-950 sm:mt-2 sm:text-3xl">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium text-zinc-500 sm:text-sm">
+            {label}
+          </p>
+          <p className="mt-1 text-2xl font-semibold tracking-tight text-zinc-950 sm:mt-2 sm:text-3xl">
             {value}
           </p>
         </div>
         <div
-          className={`hidden h-11 w-11 items-center justify-center rounded-lg sm:flex ${toneClasses[tone]}`}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl sm:h-11 sm:w-11 ${toneClasses[tone]}`}
         >
-          <Icon className="h-5 w-5" aria-hidden="true" />
+          <Icon className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
         </div>
       </div>
     </article>
