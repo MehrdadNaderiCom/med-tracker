@@ -1962,14 +1962,14 @@ function isEntryResolved(entry: TodayMedication) {
 }
 
 function getIntakeLogCareDayKey(log: IntakeLog) {
-  if (log.status !== "lapse") {
+  // Prefer the stamped Care Day on the log. For avoidance lapses this is the
+  // checklist day being answered (entry.dateKey), which can legitimately differ
+  // from careDayKeyForInstant(takenAt) after a manual End Care Day.
+  if (normalizeOptionalDateKey(log.date)) {
     return log.date;
   }
 
   try {
-    // Avoidance events are reported at the instant they happen. Derive their
-    // noon-to-noon Care Day from that immutable instant so a legacy civil-date
-    // value (for example 00:26 Tehran) cannot reopen the prompt after midnight.
     return careDayKeyForInstant(log.takenAt);
   } catch {
     return log.date;
@@ -4354,9 +4354,16 @@ export default function MedTrackApp() {
       return;
     }
 
+    // Bind the lapse to the open checklist Care Day, not only the clock-derived
+    // noon-to-noon key. After End Care Day, those can differ until the next noon.
+    const careDayKey = entry.dateKey || todayKey;
+    if (!careDayKey) {
+      toast.error("The schedule is still loading");
+      return;
+    }
+
     const now = new Date();
-    const occurrenceCareDayKey = careDayKeyForInstant(now);
-    const dedupeKey = `${entry.medication.id}:${occurrenceCareDayKey}:lapse`;
+    const dedupeKey = `${entry.medication.id}:${careDayKey}:lapse`;
 
     if (recordedAvoidanceKeys.current.has(dedupeKey)) {
       return;
@@ -4365,7 +4372,7 @@ export default function MedTrackApp() {
     const alreadyRecorded = logs.some(
       (log) =>
         log.medicationId === entry.medication.id &&
-        getIntakeLogCareDayKey(log) === occurrenceCareDayKey &&
+        getIntakeLogCareDayKey(log) === careDayKey &&
         log.status === "lapse",
     );
 
@@ -4392,7 +4399,7 @@ export default function MedTrackApp() {
       routineCategoryId: routineCategory.id,
       routineCategoryName: routineCategory.name,
       takenAt: now.toISOString(),
-      date: occurrenceCareDayKey,
+      date: careDayKey,
       status: "lapse",
       notes: "Hookah use reported at the time it happened.",
     };

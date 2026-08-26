@@ -155,6 +155,38 @@ test("a recorded hookah event resolves as a negative outcome, never success", ()
   );
 });
 
+test("hookah lapse stays on the open checklist Care Day after End Care Day", () => {
+  // After a manual End Care Day in the afternoon, the open checklist can be
+  // ahead of careDayKeyForInstant(now). The lapse must stamp the checklist day
+  // so the prompt resolves immediately instead of only showing a toast.
+  const openCareDayKey = "2026-08-14";
+  const clockDerivedCareDayKey = "2026-08-13";
+  const lapse = {
+    id: "hookah:open-day:lapse",
+    medicationId: "hookah",
+    date: openCareDayKey,
+    status: "lapse",
+    takenAt: "2026-08-13T15:30:00.000Z",
+  };
+
+  const matchesOpenDay = (log) =>
+    log.medicationId === "hookah" &&
+    log.status === "lapse" &&
+    log.date === openCareDayKey;
+  const matchesClockDay = (log) =>
+    log.medicationId === "hookah" &&
+    log.status === "lapse" &&
+    log.date === clockDerivedCareDayKey;
+
+  assert.equal(matchesOpenDay(lapse), true);
+  assert.equal(matchesClockDay(lapse), false);
+  assert.notEqual(
+    openCareDayKey,
+    clockDerivedCareDayKey,
+    "reproduces the post-end-care-day mismatch",
+  );
+});
+
 test("valid explicit mode changes and newer plan versions are accepted", () => {
   const merged = mergePrimarySyncData(
     {
