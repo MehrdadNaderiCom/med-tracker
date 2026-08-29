@@ -278,6 +278,7 @@ test("structured exercise sessions retain useful normalized detail", () => {
         distanceKm: 8.25,
         steps: 1200,
         averageHeartRateBpm: 112,
+        oxygenSaturationPercent: 96,
         averageCadenceRpm: 68,
         deviceReportedCaloriesKcal: 245,
         equipmentName: "  Home bike  ",
@@ -336,6 +337,7 @@ test("structured exercise sessions retain useful normalized detail", () => {
   assert.equal(bike.distanceKm, 8.25);
   assert.equal(bike.steps, 1200);
   assert.equal(bike.averageHeartRateBpm, 112);
+  assert.equal(bike.oxygenSaturationPercent, 96);
   assert.equal(bike.averageCadenceRpm, 68);
   assert.equal(bike.deviceReportedCaloriesKcal, 245);
   assert.equal(bike.equipmentName, "Home bike");
@@ -379,6 +381,7 @@ test("invalid exercise cores are rejected and invalid optional metrics stay unkn
           distanceKm: 0,
           steps: 1.5,
           averageHeartRateBpm: 241,
+          oxygenSaturationPercent: 101,
           averageCadenceRpm: 0,
           deviceReportedCaloriesKcal: 0,
         }),
@@ -394,8 +397,46 @@ test("invalid exercise cores are rejected and invalid optional metrics stay unkn
   assert.equal(session.distanceKm, undefined);
   assert.equal(session.steps, undefined);
   assert.equal(session.averageHeartRateBpm, undefined);
+  assert.equal(session.oxygenSaturationPercent, undefined);
   assert.equal(session.averageCadenceRpm, undefined);
   assert.equal(session.deviceReportedCaloriesKcal, undefined);
+});
+
+test("oxygen saturation keeps valid whole-number SpO2 values and treats invalid values as unknown", () => {
+  const values = [
+    ["minimum", 50],
+    ["typical", 96],
+    ["maximum", 100],
+    ["too-low", 49],
+    ["too-high", 101],
+    ["fractional", 96.5],
+    ["zero", 0],
+    ["numeric-string", "96"],
+  ];
+  const normalized = normalizeHealthData(
+    legacyV4({
+      exerciseSessions: values.map(([id, oxygenSaturationPercent]) =>
+        exerciseSession({ id, oxygenSaturationPercent }),
+      ),
+    }),
+  );
+  const byId = new Map(
+    normalized.exerciseSessions.map((exercise) => [exercise.id, exercise]),
+  );
+
+  assert.equal(normalized.exerciseSessions.length, values.length);
+  assert.equal(byId.get("minimum").oxygenSaturationPercent, 50);
+  assert.equal(byId.get("typical").oxygenSaturationPercent, 96);
+  assert.equal(byId.get("maximum").oxygenSaturationPercent, 100);
+  for (const id of [
+    "too-low",
+    "too-high",
+    "fractional",
+    "zero",
+    "numeric-string",
+  ]) {
+    assert.equal(byId.get(id).oxygenSaturationPercent, undefined);
+  }
 });
 
 test("device calorie estimates keep valid whole-number values and treat invalid values as unknown", () => {

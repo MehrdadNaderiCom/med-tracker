@@ -55,6 +55,10 @@ import {
   nextCareDayKeyAfterManualEnd,
 } from "./health-schedule";
 import {
+  isMedicationScheduledOnCareDay,
+  resolveMedicationPresenceOnCareDay,
+} from "./medication-due";
+import {
   formatDateKey,
   formatTehranInstant,
   formatTimeOfDay,
@@ -128,6 +132,10 @@ type TodayMedication = {
   takenLogId: string | null;
   lapseLogId: string | null;
   lapseRecordedAt: string | null;
+  /** True when this Care Day is carrying an unmet earlier scheduled dose. */
+  isCatchUp: boolean;
+  /** Scheduled Care Day that this catch-up entry is fulfilling. */
+  catchUpFromDateKey?: string;
 };
 
 type OrderedMedicationGroup = {
@@ -273,7 +281,7 @@ const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
 const HEALTH_DATA_STORAGE_KEY = "medtrack-health-data-v1";
 const HEALTH_REMINDER_HISTORY_STORAGE_KEY = "medtrack-health-reminder-history-v1";
-const PERSONAL_PLAN_VERSION = 6;
+const PERSONAL_PLAN_VERSION = 7;
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
   { id: "sunday", label: "Sunday", short: "Sun" },
@@ -722,6 +730,25 @@ function createStarterMedicationPlan(): Medication[] {
     },
     {
       id: createId(),
+      name: "Hibiclens 4% Chlorhexidine Gluconate Solution",
+      dosage: "1",
+      unit: "wash",
+      category: "skin",
+      schedule: {
+        type: "ordered",
+        dayMode: "weekdays",
+        times: [],
+        days: ["tuesday", "friday"],
+        order: 1,
+        routineCategoryId: "morning",
+        catchUpUntilNextScheduledDay: true,
+      },
+      notes:
+        "Twice-weekly antiseptic body wash for Tuesday and Friday Care Days. Use during your morning shower after breakfast. If you miss confirming it on the scheduled day, it stays on the checklist until you mark one use or the next Tuesday/Friday dose arrives (then the older reminder is dropped). Avoid eyes, ears, mouth, and mucous membranes; follow the product label and your clinician.",
+      isActive: true,
+    },
+    {
+      id: createId(),
       name: "Skinoren 20% Cream (azelaic acid)",
       dosage: "thin layer",
       unit: "application",
@@ -731,7 +758,7 @@ function createStarterMedicationPlan(): Medication[] {
         dayMode: "daily",
         times: [],
         days: [...ALL_DAYS],
-        order: 1,
+        order: 2,
         routineCategoryId: "morning",
       },
       notes:
@@ -1641,6 +1668,9 @@ function normalizeMedication(value: unknown): Medication | null {
         scheduleType === "ordered" && groupName.length > 0
           ? groupName
           : undefined,
+      ...(schedule.catchUpUntilNextScheduledDay === true
+        ? { catchUpUntilNextScheduledDay: true }
+        : {}),
     },
     notes: normalizeString(value.notes),
     isActive: typeof value.isActive === "boolean" ? value.isActive : true,
@@ -1884,24 +1914,7 @@ function getMedicationDaysLabel(schedule: Medication["schedule"]) {
 }
 
 function isMedicationDueOnDate(medication: Medication, dateKey: string) {
-  const dayMode = getMedicationDayMode(medication.schedule);
-
-  if (dayMode === "daily") {
-    return true;
-  }
-
-  const todayDay = getDayForDateKey(dateKey);
-  if (!todayDay) return false;
-
-  if (dayMode === "even-dates") {
-    return EVEN_ROUTINE_DAYS.includes(todayDay);
-  }
-
-  if (dayMode === "odd-dates") {
-    return ODD_ROUTINE_DAYS.includes(todayDay);
-  }
-
-  return medication.schedule.days.includes(todayDay);
+  return isMedicationScheduledOnCareDay(medication, dateKey);
 }
 
 function getMedicationCategoryOption(
@@ -2006,19 +2019,35 @@ function buildMedicationEntriesForDate(
   medications: Medication[],
   logs: IntakeLog[],
   dateKey: string,
+  options: { includeCatchUp?: boolean } = {},
 ) {
+  const includeCatchUp = options.includeCatchUp === true;
   const entries: TodayMedication[] = [];
 
   medications
-    .filter(
-      (medication) =>
-        isMedicationTrackableOnDate(medication, dateKey) &&
-        isMedicationDueOnDate(medication, dateKey),
-    )
+    .filter((medication) => isMedicationTrackableOnDate(medication, dateKey))
     .forEach((medication) => {
       const scheduleType = getMedicationScheduleType(medication);
+      const presence = resolveMedicationPresenceOnCareDay(
+        medication,
+        dateKey,
+        logs,
+      );
+
+      if (presence.kind === "hidden") {
+        return;
+      }
+
+      if (presence.kind === "catch-up" && !includeCatchUp) {
+        return;
+      }
 
       if (scheduleType === "timed") {
+        // Catch-up applies to ordered weekday plans; timed rows stay schedule-day only.
+        if (presence.kind === "catch-up") {
+          return;
+        }
+
         medication.schedule.times.forEach((time) => {
           const matchingLogs = getTodayMedicationLogs(
             logs,
@@ -2041,6 +2070,7 @@ function buildMedicationEntriesForDate(
             takenLogId: takenLog?.id ?? null,
             lapseLogId: lapseLog?.id ?? null,
             lapseRecordedAt: lapseLog?.takenAt ?? null,
+            isCatchUp: false,
           });
         });
         return;
@@ -2053,9 +2083,14 @@ function buildMedicationEntriesForDate(
         dateKey,
         null,
       );
-
-      const takenLog = matchingLogs.find((log) => log.status === "taken");
       const lapseLog = matchingLogs.find((log) => log.status === "lapse");
+      const sameDayTakenLog = matchingLogs.find((log) => log.status === "taken");
+      const completionLog = presence.completionLog;
+      const isTaken =
+        presence.kind === "catch-up"
+          ? Boolean(sameDayTakenLog) && !lapseLog
+          : presence.isTaken && !lapseLog;
+
       entries.push({
         medication,
         dateKey,
@@ -2063,10 +2098,16 @@ function buildMedicationEntriesForDate(
         time: null,
         order: getMedicationOrder(medication),
         routineCategoryId: getMedicationRoutineCategoryId(medication),
-        isTaken: Boolean(takenLog) && !lapseLog,
-        takenLogId: takenLog?.id ?? null,
+        isTaken,
+        takenLogId:
+          sameDayTakenLog?.id ??
+          (presence.kind === "scheduled" ? completionLog?.id ?? null : null),
         lapseLogId: lapseLog?.id ?? null,
         lapseRecordedAt: lapseLog?.takenAt ?? null,
+        isCatchUp: presence.kind === "catch-up",
+        ...(presence.kind === "catch-up"
+          ? { catchUpFromDateKey: presence.fromDateKey }
+          : {}),
       });
     });
 
@@ -2928,6 +2969,7 @@ export default function MedTrackApp() {
       ),
       logs,
       todayKey,
+      { includeCatchUp: true },
     );
     // Avoidance outcomes use the same noon-to-noon Care Day as every other
     // checklist item. `takenAt` still preserves the exact real-world instant.
@@ -2937,6 +2979,7 @@ export default function MedTrackApp() {
       ),
       logs,
       todayKey,
+      { includeCatchUp: true },
     );
 
     return [...completionEntries, ...avoidanceEntries];
@@ -4167,6 +4210,9 @@ export default function MedTrackApp() {
         order: form.scheduleType === "ordered" ? order : undefined,
         routineCategoryId:
           form.scheduleType === "ordered" ? routineCategoryId : undefined,
+        ...(existingMedication?.schedule.catchUpUntilNextScheduledDay
+          ? { catchUpUntilNextScheduledDay: true }
+          : {}),
       },
       notes: form.notes.trim(),
       isActive: true,
@@ -5995,6 +6041,25 @@ function MedicationDoseCard({
           {entry.medication.dosage} {entry.medication.unit} -{" "}
           {getEntryScheduleLabel(entry, routineCategories)}
         </p>
+        {entry.isCatchUp ? (
+          <p className="mt-1.5 inline-flex max-w-full flex-wrap items-center gap-1.5 text-xs font-semibold text-amber-900">
+            <span className="rounded-full bg-amber-100 px-2 py-0.5">
+              Catch-up
+              {entry.catchUpFromDateKey
+                ? ` from ${
+                    formatDateKey(entry.catchUpFromDateKey, {
+                      weekday: "short",
+                      month: "short",
+                      day: "numeric",
+                    }) ?? entry.catchUpFromDateKey
+                  }`
+                : ""}
+            </span>
+            <span className="font-medium text-amber-800/80">
+              Reminds until used once or the next scheduled wash day.
+            </span>
+          </p>
+        ) : null}
         {entry.medication.notes && (
           <details className="mt-2 text-sm text-zinc-500">
             <summary className="cursor-pointer font-medium text-emerald-800">
@@ -6010,11 +6075,13 @@ function MedicationDoseCard({
           className={`inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold ${
             entry.isTaken
               ? "bg-emerald-100 text-emerald-800"
-              : "bg-zinc-100 text-zinc-600"
+              : entry.isCatchUp
+                ? "bg-amber-100 text-amber-900"
+                : "bg-zinc-100 text-zinc-600"
           }`}
         >
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          {entry.isTaken ? "Taken" : "Pending"}
+          {entry.isTaken ? "Taken" : entry.isCatchUp ? "Overdue" : "Pending"}
         </span>
         <button
           className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold whitespace-nowrap transition ${

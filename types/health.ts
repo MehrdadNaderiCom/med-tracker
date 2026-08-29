@@ -199,6 +199,11 @@ export interface ExerciseSession {
   distanceKm?: number;
   steps?: number;
   averageHeartRateBpm?: number;
+  /**
+   * Pulse-oximeter SpO2 reading during or right after the session (percent).
+   * One representative reading is enough; blank stays unknown, not zero.
+   */
+  oxygenSaturationPercent?: number;
   averageCadenceRpm?: number;
   /** Estimate displayed by a fitness machine or wearable; not measured expenditure. */
   deviceReportedCaloriesKcal?: number;

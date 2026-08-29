@@ -698,6 +698,11 @@ function normalizeExerciseSession(value: unknown): ExerciseSession | null {
     25,
     240,
   );
+  const oxygenSaturationPercent = finiteInteger(
+    value.oxygenSaturationPercent,
+    50,
+    100,
+  );
   const averageCadenceRpm = finiteInteger(value.averageCadenceRpm, 1, 250);
   const deviceReportedCaloriesKcal = finiteInteger(
     value.deviceReportedCaloriesKcal,
@@ -742,6 +747,9 @@ function normalizeExerciseSession(value: unknown): ExerciseSession | null {
     ...(averageHeartRateBpm === null
       ? {}
       : { averageHeartRateBpm }),
+    ...(oxygenSaturationPercent === null
+      ? {}
+      : { oxygenSaturationPercent }),
     ...(averageCadenceRpm === null
       ? {}
       : { averageCadenceRpm }),

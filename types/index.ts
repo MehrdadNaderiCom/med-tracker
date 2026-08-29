@@ -34,6 +34,12 @@ export interface MedicationSchedule {
   order?: number;
   routineCategoryId?: string;
   groupName?: string;
+  /**
+   * When true, an unmet scheduled Care Day stays on the checklist on later
+   * Care Days until the user marks one use, or the next scheduled Care Day
+   * arrives (previous obligation is then abandoned).
+   */
+  catchUpUntilNextScheduledDay?: boolean;
 }
 
 export interface MedicationCategoryOption {

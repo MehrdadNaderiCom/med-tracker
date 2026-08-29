@@ -2882,6 +2882,11 @@ function ExerciseSessionCard({
             Avg HR {session.averageHeartRateBpm} bpm
           </span>
         )}
+        {session.oxygenSaturationPercent === undefined ? null : (
+          <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-950">
+            SpO2 {session.oxygenSaturationPercent}%
+          </span>
+        )}
         {session.deviceReportedCaloriesKcal === undefined ? null : (
           <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-900">
             ≈ {session.deviceReportedCaloriesKcal.toLocaleString()} kcal · device estimate
@@ -3018,6 +3023,11 @@ function ExerciseSessionForm({
       ? ""
       : String(editingSession.averageHeartRateBpm),
   );
+  const [oxygenSaturationPercent, setOxygenSaturationPercent] = useState(() =>
+    editingSession?.oxygenSaturationPercent === undefined
+      ? ""
+      : String(editingSession.oxygenSaturationPercent),
+  );
   const [averageCadenceRpm, setAverageCadenceRpm] = useState(() =>
     editingSession?.averageCadenceRpm === undefined
       ? ""
@@ -3081,6 +3091,7 @@ function ExerciseSessionForm({
     setDistanceKm("");
     setSteps("");
     setAverageHeartRateBpm("");
+    setOxygenSaturationPercent("");
     setAverageCadenceRpm("");
     setDeviceReportedCaloriesKcal("");
     setEquipmentName("");
@@ -3147,6 +3158,7 @@ function ExerciseSessionForm({
     const distance = parseNumber(distanceKm);
     const stepCount = parseNumber(steps);
     const averageHeartRate = parseNumber(averageHeartRateBpm);
+    const oxygenSaturation = parseNumber(oxygenSaturationPercent);
     const averageCadence = parseNumber(averageCadenceRpm);
     const deviceCalories = parseNumber(deviceReportedCaloriesKcal);
 
@@ -3200,6 +3212,18 @@ function ExerciseSessionForm({
         averageHeartRate > 240)
     ) {
       setMessage("Use an average heart rate from 25 to 240 bpm.");
+      return;
+    }
+    if (
+      oxygenSaturationPercent.trim() &&
+      (oxygenSaturation === null ||
+        !Number.isInteger(oxygenSaturation) ||
+        oxygenSaturation < 50 ||
+        oxygenSaturation > 100)
+    ) {
+      setMessage(
+        "Use a whole-number SpO2 from 50 to 100%, or leave it blank.",
+      );
       return;
     }
     if (
@@ -3305,6 +3329,9 @@ function ExerciseSessionForm({
         ...(averageHeartRate === null
           ? {}
           : { averageHeartRateBpm: averageHeartRate }),
+        ...(oxygenSaturation === null
+          ? {}
+          : { oxygenSaturationPercent: oxygenSaturation }),
         ...(deviceCalories === null
           ? {}
           : { deviceReportedCaloriesKcal: deviceCalories }),
@@ -3457,7 +3484,7 @@ function ExerciseSessionForm({
 
       <details className="mt-3 rounded-md border border-zinc-200 bg-white">
         <summary className="cursor-pointer px-3 py-3 text-sm font-semibold text-zinc-800">
-          Optional details · calories, distance, heart rate, strength
+          Optional details · calories, distance, heart rate, SpO2, strength
         </summary>
         <div className="border-t border-zinc-100 p-3">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -3487,6 +3514,30 @@ function ExerciseSessionForm({
                 onChange={(event) => setAverageHeartRateBpm(event.target.value)}
                 placeholder="Optional"
               />
+            </label>
+            <label>
+              <span className={LABEL_CLASS}>Oxygen saturation (SpO2 %)</span>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                inputMode="numeric"
+                min="50"
+                max="100"
+                step="1"
+                value={oxygenSaturationPercent}
+                onChange={(event) =>
+                  setOxygenSaturationPercent(event.target.value)
+                }
+                placeholder="e.g. 96"
+                aria-describedby="exercise-spo2-hint"
+              />
+              <span
+                id="exercise-spo2-hint"
+                className="mt-1 block text-xs leading-4 text-zinc-500"
+              >
+                One pulse-oximeter reading during or right after the session.
+                Blank stays unknown, not zero.
+              </span>
             </label>
             <label>
               <span className={LABEL_CLASS}>Device estimate (kcal)</span>
@@ -3755,8 +3806,9 @@ function ExerciseSessionForm({
             </label>
           </div>
           <p className="mt-3 text-xs leading-5 text-zinc-500">
-            Heart rate and machine distance are context, not universal truth. Medicines can
-            change heart-rate response, and machine levels are most comparable on the same device.
+            Heart rate, SpO2, and machine distance are context, not universal truth.
+            Medicines can change heart-rate response; SpO2 can dip briefly with effort;
+            machine levels are most comparable on the same device.
           </p>
         </div>
       </details>
