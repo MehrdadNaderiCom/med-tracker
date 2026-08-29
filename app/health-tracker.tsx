@@ -27,6 +27,21 @@ import type {
   ReactNode,
 } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+
+const HEALTH_SECTION_NAV = [
+  { id: "health-today", label: "Today", shortLabel: "Today" },
+  { id: "health-profile", label: "Profile", shortLabel: "Profile" },
+  { id: "health-weight", label: "Weight", shortLabel: "Weight" },
+  { id: "health-bp", label: "Blood pressure", shortLabel: "BP" },
+  { id: "health-diet", label: "Diet", shortLabel: "Diet" },
+  { id: "health-waist", label: "Waist", shortLabel: "Waist" },
+  { id: "health-movement", label: "Movement", shortLabel: "Move" },
+  { id: "health-settings", label: "Settings", shortLabel: "Settings" },
+] as const;
+
+type HealthSectionId = (typeof HEALTH_SECTION_NAV)[number]["id"];
+
+const HEALTH_SECTION_SCROLL_CLASS = "scroll-mt-24";
 import type {
   ActivityCheckIn,
   BloodPressureArm,
@@ -1681,6 +1696,73 @@ function SectionHeading({
         <p className="mt-0.5 text-sm leading-5 text-zinc-500">{description}</p>
       </div>
     </div>
+  );
+}
+
+function scrollToHealthSection(sectionId: HealthSectionId) {
+  const element = document.getElementById(sectionId);
+  if (!element) return;
+
+  if (element instanceof HTMLDetailsElement) {
+    element.open = true;
+  }
+
+  element.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function HealthSectionNav({
+  activeSectionId,
+  onSelect,
+}: {
+  activeSectionId: HealthSectionId;
+  onSelect: (sectionId: HealthSectionId) => void;
+}) {
+  const navRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const activeButton = navRef.current?.querySelector<HTMLButtonElement>(
+      `[data-health-section="${activeSectionId}"]`,
+    );
+    activeButton?.scrollIntoView({
+      behavior: "smooth",
+      inline: "center",
+      block: "nearest",
+    });
+  }, [activeSectionId]);
+
+  return (
+    <nav
+      ref={navRef}
+      aria-label="Health sections"
+      className="sticky top-0 z-20 -mx-4 border-b border-emerald-100/80 bg-[#f5faf8]/95 px-4 py-2 backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8"
+    >
+      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-800/80">
+        Jump to section
+      </p>
+      <div className="flex gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {HEALTH_SECTION_NAV.map((section) => {
+          const isActive = section.id === activeSectionId;
+          return (
+            <button
+              key={section.id}
+              type="button"
+              data-health-section={section.id}
+              aria-current={isActive ? "true" : undefined}
+              title={section.label}
+              className={`inline-flex min-h-10 shrink-0 items-center rounded-full border px-3 py-1.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 ${
+                isActive
+                  ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
+                  : "border-zinc-200 bg-white text-zinc-700 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-900"
+              }`}
+              onClick={() => onSelect(section.id)}
+            >
+              <span className="sm:hidden">{section.shortLabel}</span>
+              <span className="hidden sm:inline">{section.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
   );
 }
 
@@ -4004,7 +4086,11 @@ function ProfilePanel({
   }
 
   return (
-    <section className={CARD_CLASS} aria-labelledby="profile-title">
+    <section
+      id="health-profile"
+      className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+      aria-labelledby="profile-title"
+    >
       <SectionHeading
         icon={<Activity className="h-5 w-5" aria-hidden="true" />}
         title="Health profile"
@@ -4245,7 +4331,10 @@ function SettingsPanel({
   }
 
   return (
-    <details className={CARD_CLASS}>
+    <details
+      id="health-settings"
+      className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+    >
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 font-semibold text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200">
         <span className="flex items-center gap-2">
           <Settings2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
@@ -4499,6 +4588,8 @@ export function HealthTracker({
     useState<ExerciseReportRange>("today");
   const [editingExerciseSession, setEditingExerciseSession] =
     useState<ExerciseSession | null>(null);
+  const [activeHealthSectionId, setActiveHealthSectionId] =
+    useState<HealthSectionId>("health-today");
   const validNow = Number.isFinite(now.getTime()) ? now : new Date(0);
   const todayKey = careDayKey;
   const cycleActive = isInCycle(todayKey, settings);
@@ -4885,6 +4976,55 @@ export function HealthTracker({
     });
   }
 
+  useEffect(() => {
+    const sectionElements = HEALTH_SECTION_NAV.map((section) =>
+      document.getElementById(section.id),
+    ).filter((element): element is HTMLElement => element instanceof HTMLElement);
+
+    if (sectionElements.length === 0) {
+      return;
+    }
+
+    const visibilityById = new Map<string, number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          visibilityById.set(
+            entry.target.id,
+            entry.isIntersecting ? entry.intersectionRatio : 0,
+          );
+        });
+
+        let bestId: HealthSectionId | null = null;
+        let bestRatio = 0;
+        for (const section of HEALTH_SECTION_NAV) {
+          const ratio = visibilityById.get(section.id) ?? 0;
+          if (ratio > bestRatio) {
+            bestRatio = ratio;
+            bestId = section.id;
+          }
+        }
+
+        if (bestId) {
+          setActiveHealthSectionId(bestId);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "-15% 0px -55% 0px",
+        threshold: [0, 0.1, 0.25, 0.5, 0.75],
+      },
+    );
+
+    sectionElements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, []);
+
+  function handleHealthSectionSelect(sectionId: HealthSectionId) {
+    setActiveHealthSectionId(sectionId);
+    scrollToHealthSection(sectionId);
+  }
+
   return (
     <section className="space-y-5 pb-24 text-zinc-950" aria-labelledby="health-title">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -4905,6 +5045,11 @@ export function HealthTracker({
           <span className="truncate">Care Day {todayKey} · closes at noon</span>
         </span>
       </header>
+
+      <HealthSectionNav
+        activeSectionId={activeHealthSectionId}
+        onSelect={handleHealthSectionSelect}
+      />
 
       {hasRecentBpSession && latestBp ? (
         <details className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sky-950 shadow-sm">
@@ -5012,7 +5157,11 @@ export function HealthTracker({
         </section>
       ) : null}
 
-      <section className={CARD_CLASS} aria-labelledby="today-actions-title">
+      <section
+        id="health-today"
+        className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+        aria-labelledby="today-actions-title"
+      >
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 id="today-actions-title" className="text-lg font-semibold">
@@ -5127,7 +5276,11 @@ export function HealthTracker({
         onUpdate={onUpdateProfile}
       />
 
-      <section className={CARD_CLASS} aria-labelledby="weight-section-title">
+      <section
+        id="health-weight"
+        className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+        aria-labelledby="weight-section-title"
+      >
         <SectionHeading
           icon={<Scale className="h-5 w-5" aria-hidden="true" />}
           title="Weight journey"
@@ -5291,7 +5444,11 @@ export function HealthTracker({
         </div>
       </section>
 
-      <section className={CARD_CLASS} aria-labelledby="bp-section-title">
+      <section
+        id="health-bp"
+        className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+        aria-labelledby="bp-section-title"
+      >
         <SectionHeading
           icon={<HeartPulse className="h-5 w-5" aria-hidden="true" />}
           title="Blood pressure"
@@ -5492,7 +5649,11 @@ export function HealthTracker({
         </div>
       </section>
 
-      <section className={CARD_CLASS} aria-labelledby="diet-section-title">
+      <section
+        id="health-diet"
+        className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+        aria-labelledby="diet-section-title"
+      >
         <SectionHeading
           icon={<Salad className="h-5 w-5" aria-hidden="true" />}
           title="Diet adherence"
@@ -5570,7 +5731,11 @@ export function HealthTracker({
         </div>
       </section>
 
-      <section className={CARD_CLASS} aria-labelledby="waist-section-title">
+      <section
+        id="health-waist"
+        className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+        aria-labelledby="waist-section-title"
+      >
         <SectionHeading
           icon={<Ruler className="h-5 w-5" aria-hidden="true" />}
           title="Waist trend"
@@ -5593,7 +5758,11 @@ export function HealthTracker({
         </div>
       </section>
 
-      <section className={CARD_CLASS} aria-labelledby="activity-section-title">
+      <section
+        id="health-movement"
+        className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
+        aria-labelledby="activity-section-title"
+      >
         <SectionHeading
           icon={<Dumbbell className="h-5 w-5" aria-hidden="true" />}
           title="Movement & strength"
