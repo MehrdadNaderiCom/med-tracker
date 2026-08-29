@@ -36,6 +36,7 @@ const HEALTH_SECTION_NAV = [
   { id: "health-diet", label: "Diet", shortLabel: "Diet" },
   { id: "health-waist", label: "Waist", shortLabel: "Waist" },
   { id: "health-movement", label: "Movement", shortLabel: "Move" },
+  { id: "health-exercise-history", label: "Exercise log", shortLabel: "Log" },
   { id: "health-settings", label: "Settings", shortLabel: "Settings" },
 ] as const;
 
@@ -468,6 +469,33 @@ function formatShortDate(value: string | Date) {
     timeZone: HEALTH_TIME_ZONE,
     month: "short",
     day: "numeric",
+  }).format(date);
+}
+
+function formatCalendarDayLabel(dateKey: string, todayKey: string) {
+  const date = new Date(`${dateKey}T12:00:00.000Z`);
+  if (!Number.isFinite(date.getTime())) return dateKey;
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    weekday: "long",
+  }).format(date);
+  const monthDay = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+  }).format(date);
+  if (dateKey === todayKey) {
+    return `Today · ${weekday} · ${monthDay}`;
+  }
+  return `${weekday} · ${monthDay}`;
+}
+
+function formatCalendarDayShort(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00.000Z`);
+  if (!Number.isFinite(date.getTime())) return dateKey.slice(5);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    weekday: "short",
   }).format(date);
 }
 
@@ -4585,7 +4613,7 @@ export function HealthTracker({
   onUpdateSettings,
 }: HealthTrackerProps) {
   const [exerciseReportRange, setExerciseReportRange] =
-    useState<ExerciseReportRange>("today");
+    useState<ExerciseReportRange>("7-days");
   const [editingExerciseSession, setEditingExerciseSession] =
     useState<ExerciseSession | null>(null);
   const [activeHealthSectionId, setActiveHealthSectionId] =
@@ -4824,8 +4852,38 @@ export function HealthTracker({
     exerciseReportRange === "all" && exerciseSessionsByDate.length === 0
       ? "No sessions yet"
       : selectedExerciseRangeStart === selectedExerciseRangeEnd
-      ? selectedExerciseRangeStart
-      : `${selectedExerciseRangeStart} – ${selectedExerciseRangeEnd}`;
+      ? formatCalendarDayLabel(selectedExerciseRangeStart, todayCalendarKey)
+      : `${formatCalendarDayLabel(selectedExerciseRangeStart, todayCalendarKey)} – ${formatCalendarDayLabel(selectedExerciseRangeEnd, todayCalendarKey)}`;
+
+  const recentExerciseDateKeys = getTrailingTehranDateKeys(todayCalendarKey, 7);
+  const recentExerciseSummary = summarizeExerciseSessions(
+    sortedExerciseSessions,
+    recentExerciseDateKeys,
+  );
+  const recentExerciseDays = recentExerciseDateKeys.map((dateKey) => {
+    const daySessions = sortedExerciseSessions.filter(
+      (session) => getExerciseSessionTehranDateKey(session) === dateKey,
+    );
+    const minutes = daySessions.reduce(
+      (total, session) => total + session.durationMinutes,
+      0,
+    );
+    const topActivity = daySessions[0]
+      ? daySessions[0].customActivityName?.trim() ||
+        EXERCISE_ACTIVITY_LABELS[daySessions[0].activityType]
+      : null;
+    return {
+      dateKey,
+      minutes,
+      sessionCount: daySessions.length,
+      topActivity,
+      hasSession: daySessions.length > 0,
+    };
+  });
+  const latestExerciseSession = sortedExerciseSessions.at(-1) ?? null;
+  const latestExerciseDateKey = latestExerciseSession
+    ? getExerciseSessionTehranDateKey(latestExerciseSession)
+    : null;
 
   const todayWeights = sortedWeights.filter(
     (entry) => entryCareDayKey(entry) === todayKey,
@@ -5778,24 +5836,162 @@ export function HealthTracker({
           onCancelEdit={() => setEditingExerciseSession(null)}
         />
 
-        <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 sm:p-4">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h3 className="font-semibold text-zinc-950">Derived time range</h3>
-              <p className="mt-0.5 text-xs text-zinc-600" aria-live="polite">
-                {selectedExerciseRangeLabel} · Tehran calendar dates, midnight to midnight
+        <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/50 p-3 sm:p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="font-semibold text-zinc-950">Recent movement</h3>
+              <p className="mt-0.5 text-xs leading-5 text-zinc-600">
+                Last 7 Tehran calendar days · blank days mean no log, not proof of rest
               </p>
             </div>
-            <div className="flex flex-wrap gap-1 rounded-lg border border-zinc-200 bg-white p-1" role="group" aria-label="Exercise report range">
+            <button
+              type="button"
+              className="inline-flex min-h-11 items-center justify-center rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
+              onClick={() => {
+                setExerciseReportRange("30-days");
+                window.requestAnimationFrame(() => {
+                  document
+                    .getElementById("health-exercise-history")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
+              }}
+            >
+              Browse full history
+            </button>
+          </div>
+
+          {latestExerciseSession && latestExerciseDateKey ? (
+            <div className="mt-3 rounded-md border border-emerald-100 bg-white px-3 py-2.5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">
+                Latest session
+              </p>
+              <p className="mt-1 text-sm font-semibold text-zinc-950">
+                {latestExerciseSession.customActivityName?.trim() ||
+                  EXERCISE_ACTIVITY_LABELS[latestExerciseSession.activityType]}
+                <span className="font-medium text-zinc-600">
+                  {" "}
+                  · {latestExerciseSession.durationMinutes.toLocaleString(undefined, {
+                    maximumFractionDigits: 1,
+                  })}{" "}
+                  min
+                </span>
+              </p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                {formatCalendarDayLabel(latestExerciseDateKey, todayCalendarKey)}
+                {latestExerciseSession.oxygenSaturationPercent === undefined
+                  ? ""
+                  : ` · SpO2 ${latestExerciseSession.oxygenSaturationPercent}%`}
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 rounded-md border border-dashed border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-500">
+              No exercise sessions logged yet. Save one above to start your history.
+            </p>
+          )}
+
+          <div
+            className="mt-3 grid grid-cols-7 gap-1.5"
+            aria-label="Exercise activity over the last 7 days"
+          >
+            {recentExerciseDays.map((day) => (
+              <button
+                key={day.dateKey}
+                type="button"
+                title={
+                  day.hasSession
+                    ? `${formatCalendarDayLabel(day.dateKey, todayCalendarKey)}: ${day.minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min`
+                    : `${formatCalendarDayLabel(day.dateKey, todayCalendarKey)}: no log`
+                }
+                className={`flex min-h-[4.5rem] flex-col items-center justify-between rounded-lg border px-1 py-1.5 text-center transition ${
+                  day.hasSession
+                    ? "border-emerald-200 bg-emerald-100/80 text-emerald-950"
+                    : "border-zinc-200 bg-white text-zinc-400"
+                }`}
+                onClick={() => {
+                  setExerciseReportRange(
+                    day.dateKey === todayCalendarKey ? "today" : "7-days",
+                  );
+                  window.requestAnimationFrame(() => {
+                    document
+                      .getElementById("health-exercise-history")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  });
+                }}
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-wide">
+                  {formatCalendarDayShort(day.dateKey)}
+                </span>
+                <span
+                  className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${
+                    day.hasSession
+                      ? "bg-emerald-600 text-white"
+                      : "bg-zinc-100 text-zinc-400"
+                  }`}
+                >
+                  {day.hasSession
+                    ? Math.round(day.minutes)
+                    : "–"}
+                </span>
+                <span className="max-w-full truncate text-[10px] leading-3">
+                  {day.hasSession ? "min" : "none"}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="rounded-md bg-white px-2.5 py-2">
+              <p className="text-[11px] font-medium text-zinc-500">Active days</p>
+              <p className="text-lg font-semibold text-zinc-950">
+                {recentExerciseSummary.activeDayCount}
+                <span className="text-sm font-medium text-zinc-500">/7</span>
+              </p>
+            </div>
+            <div className="rounded-md bg-white px-2.5 py-2">
+              <p className="text-[11px] font-medium text-zinc-500">Minutes</p>
+              <p className="text-lg font-semibold text-emerald-950">
+                {recentExerciseSummary.totalMinutes.toLocaleString(undefined, {
+                  maximumFractionDigits: 0,
+                })}
+              </p>
+            </div>
+            <div className="rounded-md bg-white px-2.5 py-2">
+              <p className="text-[11px] font-medium text-zinc-500">Mod-eq</p>
+              <p className="text-lg font-semibold text-sky-950">
+                {recentExerciseSummary.moderateEquivalentMinutes.toLocaleString(
+                  undefined,
+                  { maximumFractionDigits: 0 },
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div
+          id="health-exercise-history"
+          className={`mt-4 rounded-lg border border-zinc-200 p-3 sm:p-4 ${HEALTH_SECTION_SCROLL_CLASS}`}
+        >
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-zinc-900">Exercise history</h3>
+              <p className="mt-0.5 text-xs text-zinc-500" aria-live="polite">
+                {selectedExerciseRangeLabel} · Tehran calendar dates
+              </p>
+            </div>
+            <div
+              className="flex flex-wrap gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1"
+              role="group"
+              aria-label="Exercise history range"
+            >
               {EXERCISE_REPORT_RANGE_OPTIONS.map((option) => (
                 <button
                   key={option.id}
                   type="button"
                   aria-pressed={exerciseReportRange === option.id}
-                  className={`inline-flex min-h-11 items-center rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                  className={`inline-flex min-h-10 items-center rounded-xl px-3 py-1.5 text-sm font-semibold transition ${
                     exerciseReportRange === option.id
                       ? "bg-emerald-600 text-white"
-                      : "text-zinc-600 hover:bg-zinc-50"
+                      : "text-zinc-600 hover:bg-white"
                   }`}
                   onClick={() => setExerciseReportRange(option.id)}
                 >
@@ -5804,110 +6000,161 @@ export function HealthTracker({
               ))}
             </div>
           </div>
-          <p className="mt-3 text-xs leading-5 text-zinc-500">
-            Reports are calculated from daily session records. A date with no entry stays unknown; it is not treated as rest or zero activity.
+          <p className="mt-2 text-xs leading-5 text-zinc-500">
+            Pick a range to review past sessions. A date with no entry stays unknown; it is not treated as rest or zero activity.
           </p>
-        </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <div className="rounded-md bg-zinc-50 p-3">
-            <p className="text-xs font-medium text-zinc-500">Days with entries</p>
-            <p className="mt-1 text-xl font-semibold text-zinc-950">
-              {exerciseSummary.activeDayCount}
-            </p>
-            <p className="text-xs text-zinc-500">
-              {selectedExerciseSessions.length} logged session{selectedExerciseSessions.length === 1 ? "" : "s"}
-            </p>
-          </div>
-          <div className="rounded-md bg-emerald-50 p-3">
-            <p className="text-xs font-medium text-emerald-700">All active minutes</p>
-            <p className="mt-1 text-xl font-semibold text-emerald-950">{selectedExerciseMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}</p>
-            <p className="text-xs text-emerald-700">Includes light and mobility</p>
-          </div>
-          <div className="rounded-md bg-sky-50 p-3">
-            <p className="text-xs font-medium text-sky-700">Moderate-equivalent</p>
-            <p className="mt-1 text-xl font-semibold text-sky-950">{moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })}</p>
-            <p className="text-xs text-sky-700">Aerobic min · vigorous ×2</p>
-          </div>
-          <div className="rounded-md bg-violet-50 p-3">
-            <p className="text-xs font-medium text-violet-700">Strength days</p>
-            <p className="mt-1 text-xl font-semibold text-violet-950">{strengthDayCount}</p>
-            <p className="text-xs text-violet-700">Distinct Tehran dates</p>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-md border border-zinc-200 p-3">
-          {exerciseReportRange === "7-days" ? (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span className="font-semibold text-zinc-800">General adult aerobic reference</span>
-                <span className="font-semibold text-emerald-700">{moderateEquivalentMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} / 150 min</span>
-              </div>
-              <div
-                className="mt-2 h-2.5 overflow-hidden rounded-full bg-zinc-100"
-                role="progressbar"
-                aria-label="Progress toward the general 150-minute adult aerobic reference"
-                aria-valuemin={0}
-                aria-valuemax={150}
-                aria-valuenow={Math.min(150, Math.round(moderateEquivalentMinutes))}
-              >
-                <div className="h-full rounded-full bg-emerald-600" style={{ width: `${generalAerobicReferenceProgress}%` }} />
-              </div>
-              <p className="mt-2 text-xs leading-5 text-zinc-500">
-                This is a general-population reference, not a personalized starting dose. Light activity remains visible in total minutes; strength and mobility are not misclassified as aerobic minutes.
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="rounded-md bg-zinc-50 p-3">
+              <p className="text-xs font-medium text-zinc-500">Days with entries</p>
+              <p className="mt-1 text-xl font-semibold text-zinc-950">
+                {exerciseSummary.activeDayCount}
               </p>
-            </>
-          ) : (
-            <div>
-              <p className="text-sm font-semibold text-zinc-800">Activity mix for this range</p>
-              <p className="mt-0.5 text-xs text-zinc-500">All figures below are derived from the daily session log.</p>
+              <p className="text-xs text-zinc-500">
+                {selectedExerciseSessions.length} logged session
+                {selectedExerciseSessions.length === 1 ? "" : "s"}
+              </p>
             </div>
-          )}
-          {exerciseMinutesByType.length ? (
-            <>
-              <p className="mt-3 text-xs font-semibold text-zinc-700">Minutes by activity</p>
-              <div className="mt-2 flex flex-wrap gap-2" aria-label="Minutes by activity type">
-                {exerciseMinutesByType.map(([label, minutes]) => (
-                  <span key={label} className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700">
-                    {label} · {minutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} min
+            <div className="rounded-md bg-emerald-50 p-3">
+              <p className="text-xs font-medium text-emerald-700">All active minutes</p>
+              <p className="mt-1 text-xl font-semibold text-emerald-950">
+                {selectedExerciseMinutes.toLocaleString(undefined, {
+                  maximumFractionDigits: 1,
+                })}
+              </p>
+              <p className="text-xs text-emerald-700">Includes light and mobility</p>
+            </div>
+            <div className="rounded-md bg-sky-50 p-3">
+              <p className="text-xs font-medium text-sky-700">Moderate-equivalent</p>
+              <p className="mt-1 text-xl font-semibold text-sky-950">
+                {moderateEquivalentMinutes.toLocaleString(undefined, {
+                  maximumFractionDigits: 1,
+                })}
+              </p>
+              <p className="text-xs text-sky-700">Aerobic min · vigorous ×2</p>
+            </div>
+            <div className="rounded-md bg-violet-50 p-3">
+              <p className="text-xs font-medium text-violet-700">Strength days</p>
+              <p className="mt-1 text-xl font-semibold text-violet-950">
+                {strengthDayCount}
+              </p>
+              <p className="text-xs text-violet-700">Distinct Tehran dates</p>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-md border border-zinc-200 p-3">
+            {exerciseReportRange === "7-days" ? (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="font-semibold text-zinc-800">
+                    General adult aerobic reference
                   </span>
-                ))}
+                  <span className="font-semibold text-emerald-700">
+                    {moderateEquivalentMinutes.toLocaleString(undefined, {
+                      maximumFractionDigits: 1,
+                    })}{" "}
+                    / 150 min
+                  </span>
+                </div>
+                <div
+                  className="mt-2 h-2.5 overflow-hidden rounded-full bg-zinc-100"
+                  role="progressbar"
+                  aria-label="Progress toward the general 150-minute adult aerobic reference"
+                  aria-valuemin={0}
+                  aria-valuemax={150}
+                  aria-valuenow={Math.min(
+                    150,
+                    Math.round(moderateEquivalentMinutes),
+                  )}
+                >
+                  <div
+                    className="h-full rounded-full bg-emerald-600"
+                    style={{ width: `${generalAerobicReferenceProgress}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-xs leading-5 text-zinc-500">
+                  This is a general-population reference, not a personalized starting
+                  dose. Light activity remains visible in total minutes; strength and
+                  mobility are not misclassified as aerobic minutes.
+                </p>
+              </>
+            ) : (
+              <div>
+                <p className="text-sm font-semibold text-zinc-800">
+                  Activity mix for this range
+                </p>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  All figures below are derived from the daily session log.
+                </p>
               </div>
-            </>
-          ) : (
-            <p className="mt-3 text-sm text-zinc-500">No activity types logged in this range.</p>
-          )}
-          {exerciseSummary.deviceCalorieSessionCount > 0 ? (
-            <div className="mt-3 rounded-md bg-amber-50 px-3 py-2.5 text-amber-950">
-              <p className="text-sm font-semibold">
-                ≈ {exerciseSummary.totalDeviceReportedCaloriesKcal.toLocaleString()} kcal · sum of recorded device estimates
+            )}
+            {exerciseMinutesByType.length ? (
+              <>
+                <p className="mt-3 text-xs font-semibold text-zinc-700">
+                  Minutes by activity
+                </p>
+                <div
+                  className="mt-2 flex flex-wrap gap-2"
+                  aria-label="Minutes by activity type"
+                >
+                  {exerciseMinutesByType.map(([label, minutes]) => (
+                    <span
+                      key={label}
+                      className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700"
+                    >
+                      {label} ·{" "}
+                      {minutes.toLocaleString(undefined, {
+                        maximumFractionDigits: 1,
+                      })}{" "}
+                      min
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="mt-3 text-sm text-zinc-500">
+                No activity types logged in this range.
               </p>
-              <p className="mt-0.5 text-xs leading-5 text-amber-800">
-                Reported for {exerciseSummary.deviceCalorieSessionCount} of {selectedExerciseSessions.length} session{selectedExerciseSessions.length === 1 ? "" : "s"}. Estimates are not used as a calorie goal or food budget.
-              </p>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="mt-4 rounded-lg border border-zinc-200 p-3 sm:p-4">
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <h3 className="font-semibold text-zinc-900">Daily exercise history</h3>
-              <p className="mt-0.5 text-xs text-zinc-500">{selectedExerciseRangeLabel} · grouped by Tehran calendar date</p>
-            </div>
-            <span className="text-xs text-zinc-500">Newest day first</span>
+            )}
+            {exerciseSummary.deviceCalorieSessionCount > 0 ? (
+              <div className="mt-3 rounded-md bg-amber-50 px-3 py-2.5 text-amber-950">
+                <p className="text-sm font-semibold">
+                  ≈{" "}
+                  {exerciseSummary.totalDeviceReportedCaloriesKcal.toLocaleString()}{" "}
+                  kcal · sum of recorded device estimates
+                </p>
+                <p className="mt-0.5 text-xs leading-5 text-amber-800">
+                  Reported for {exerciseSummary.deviceCalorieSessionCount} of{" "}
+                  {selectedExerciseSessions.length} session
+                  {selectedExerciseSessions.length === 1 ? "" : "s"}. Estimates are
+                  not used as a calorie goal or food budget.
+                </p>
+              </div>
+            ) : null}
           </div>
-          <div className="mt-3 space-y-4">
+
+          <div className="mt-4 space-y-4">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <h4 className="text-sm font-semibold text-zinc-900">
+                Sessions by day
+              </h4>
+              <span className="text-xs text-zinc-500">Newest day first</span>
+            </div>
             {exerciseSessionsByDate.length ? (
               exerciseSessionsByDate.map((day) => (
                 <section key={day.dateKey} className="overflow-hidden rounded-lg border border-zinc-200">
                   <div className="flex flex-wrap items-start justify-between gap-3 bg-zinc-50 px-3 py-2.5">
                     <div>
                       <h4 className="font-semibold text-zinc-950">
-                        {day.dateKey === todayCalendarKey ? `Today · ${day.dateKey}` : day.dateKey}
+                        {formatCalendarDayLabel(day.dateKey, todayCalendarKey)}
                       </h4>
                       <p className="mt-0.5 text-xs text-zinc-500">
-                        {day.sessions.length} session{day.sessions.length === 1 ? "" : "s"} · {day.summary.totalMinutes.toLocaleString(undefined, { maximumFractionDigits: 1 })} active min
+                        {day.dateKey} · {day.sessions.length} session
+                        {day.sessions.length === 1 ? "" : "s"} ·{" "}
+                        {day.summary.totalMinutes.toLocaleString(undefined, {
+                          maximumFractionDigits: 1,
+                        })}{" "}
+                        active min
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-end gap-1.5 text-xs text-zinc-700">

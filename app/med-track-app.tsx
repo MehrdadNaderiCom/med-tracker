@@ -281,7 +281,8 @@ const PERSONAL_PLAN_VERSION_STORAGE_KEY = "medtrack-personal-plan-version";
 const REMINDER_SETTINGS_STORAGE_KEY = "medtrack-reminder-settings";
 const HEALTH_DATA_STORAGE_KEY = "medtrack-health-data-v1";
 const HEALTH_REMINDER_HISTORY_STORAGE_KEY = "medtrack-health-reminder-history-v1";
-const PERSONAL_PLAN_VERSION = 7;
+const PERSONAL_PLAN_VERSION = 8;
+const HIBICLENS_PLAN_NAME = "Hibiclens 4% Chlorhexidine Gluconate Solution";
 
 const WEEK_DAYS: { id: WeekDay; label: string; short: string }[] = [
   { id: "sunday", label: "Sunday", short: "Sun" },
@@ -730,7 +731,7 @@ function createStarterMedicationPlan(): Medication[] {
     },
     {
       id: createId(),
-      name: "Hibiclens 4% Chlorhexidine Gluconate Solution",
+      name: HIBICLENS_PLAN_NAME,
       dosage: "1",
       unit: "wash",
       category: "skin",
@@ -744,7 +745,7 @@ function createStarterMedicationPlan(): Medication[] {
         catchUpUntilNextScheduledDay: true,
       },
       notes:
-        "Twice-weekly antiseptic body wash for Tuesday and Friday Care Days. Use during your morning shower after breakfast. If you miss confirming it on the scheduled day, it stays on the checklist until you mark one use or the next Tuesday/Friday dose arrives (then the older reminder is dropped). Avoid eyes, ears, mouth, and mucous membranes; follow the product label and your clinician.",
+        "Twice-weekly antiseptic body wash on Tuesday and Friday Care Days, starting from the next Tuesday after it is added to your plan. Use during your morning shower after breakfast. If you miss confirming it on the scheduled day, it stays on the checklist until you mark one use or the next Tuesday/Friday dose arrives (then the older reminder is dropped). Avoid eyes, ears, mouth, and mucous membranes; follow the product label and your clinician.",
       isActive: true,
     },
     {
@@ -922,11 +923,15 @@ function mergePersonalMedicationPlan(
       return medication;
     }
 
+    const nextActiveFrom = isHibiclensPlanMedication(planMedication.name)
+      ? resolveHibiclensActiveFrom(activeFromDateKey, medication.activeFrom)
+      : medication.activeFrom;
+
     return {
       ...planMedication,
       id: medication.id,
       isActive: medication.isActive,
-      activeFrom: medication.activeFrom,
+      activeFrom: nextActiveFrom,
       activeUntil: medication.activeUntil,
       trackingMode: planMedication.trackingMode,
     };
@@ -944,7 +949,10 @@ function mergePersonalMedicationPlan(
     .map((medication) => ({
       ...medication,
       // New plan items must not rewrite older adherence history.
-      activeFrom: activeFromDateKey,
+      // Hibiclens waits for the next Tuesday instead of the current Care Day.
+      activeFrom: isHibiclensPlanMedication(medication.name)
+        ? resolveHibiclensActiveFrom(activeFromDateKey)
+        : activeFromDateKey,
     }));
 
   return [...nextMedications, ...missingPlanMedications];
@@ -1891,6 +1899,51 @@ function formatReadableTime(value: string) {
 function getDayForDateKey(dateKey: string): WeekDay | null {
   const weekdayIndex = weekdayIndexForDateKey(dateKey);
   return weekdayIndex === null ? null : WEEK_DAYS[weekdayIndex].id;
+}
+
+function isHibiclensPlanMedication(name: string) {
+  return normalizeMedicationName(name) === normalizeMedicationName(HIBICLENS_PLAN_NAME);
+}
+
+/** First matching weekday strictly after fromDateKey (Iran Care Day keys). */
+function getNextWeekdayDateKeyAfter(fromDateKey: string, weekday: WeekDay) {
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const candidate = addCareDays(fromDateKey, offset);
+    if (getDayForDateKey(candidate) === weekday) {
+      return candidate;
+    }
+  }
+  return addCareDays(fromDateKey, 1);
+}
+
+function resolveHibiclensActiveFrom(
+  careDayKey: string | undefined,
+  currentActiveFrom?: string,
+) {
+  if (!careDayKey) {
+    return currentActiveFrom;
+  }
+
+  const nextTuesday = getNextWeekdayDateKeyAfter(careDayKey, "tuesday");
+  if (!currentActiveFrom) {
+    return nextTuesday;
+  }
+
+  // Keep a later intentional start; only rewrite a too-early recent start.
+  if (currentActiveFrom >= nextTuesday) {
+    return currentActiveFrom;
+  }
+
+  try {
+    const earliestRewrite = addCareDays(careDayKey, -14);
+    if (currentActiveFrom >= earliestRewrite) {
+      return nextTuesday;
+    }
+  } catch {
+    return nextTuesday;
+  }
+
+  return currentActiveFrom;
 }
 
 function getMedicationDaysLabel(schedule: Medication["schedule"]) {
