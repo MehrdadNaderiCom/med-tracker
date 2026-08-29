@@ -762,7 +762,7 @@ function createStarterMedicationPlan(): Medication[] {
         routineCategoryId: "morning",
       },
       notes:
-        "Morning skin treatment for dark spots. Apply a thin layer after gentle cleansing and drying. Avoid eyes, lips, and irritated skin. Use daytime sunscreen; reduce frequency or contact your dermatologist if irritation becomes strong.",
+        "Morning skin treatment for dark spots. Apply a thin layer after gentle cleansing and drying. Avoid eyes, lips, and irritated skin. Use daytime sunscreen; reduce frequency or contact your dermatologist if irritation becomes strong. Apply after the Hibiclens wash on Tuesday and Friday when that wash is due.",
       isActive: true,
     },
     {
