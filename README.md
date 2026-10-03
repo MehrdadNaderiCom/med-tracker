@@ -4,6 +4,17 @@ Personal medication, care routine, weight, blood-pressure, and diet-adherence
 tracker built with Next.js App Router, TypeScript, Tailwind CSS, lucide-react,
 sonner, and date-fns.
 
+Health also records multiple sleep episodes per day, including naps, ongoing
+sleep, quality ratings, awakenings, and editable history. Sleep uses actual
+Asia/Tehran timestamps, independent of the medication Care Day. Daily totals
+split completed intervals at midnight; overlapping intervals are counted once.
+Unrecorded days and unrated quality remain unknown.
+
+Schema v6 adds sleep records without replacing existing health collections. The
+health sync API merges records by ID and preserves sleep when older clients omit
+it. The browser keeps a one-time pre-v6 health snapshot in localStorage before
+normalizing an older local document.
+
 ## Development
 
 ```bash

@@ -14,7 +14,7 @@ function loadTs(relativePath, stubs = {}) {
     },
     fileName: sourceUrl.pathname,
   }).outputText;
-  const module = { exports: {} };
+  const testModule = { exports: {} };
   const localRequire = (id) => {
     if (stubs[id]) return stubs[id];
     if (id === "./tehran-time") return loadTs("../app/tehran-time.ts");
@@ -26,8 +26,8 @@ function loadTs(relativePath, stubs = {}) {
     throw new Error(`Unexpected require: ${id}`);
   };
   vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
+    exports: testModule.exports,
+    module: testModule,
     require: localRequire,
     console,
     Date,
@@ -44,7 +44,7 @@ function loadTs(relativePath, stubs = {}) {
     Intl,
     RegExp,
   });
-  return module.exports;
+  return testModule.exports;
 }
 
 const { addCareDays } = loadTs("../app/health-schedule.ts");

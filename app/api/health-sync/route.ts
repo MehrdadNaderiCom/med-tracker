@@ -20,6 +20,7 @@ type DeletedEntryIds = {
   waistEntryIds: string[];
   activityCheckInIds: string[];
   exerciseSessionIds: string[];
+  sleepSessionIds: string[];
 };
 
 type HealthSyncData = {
@@ -30,6 +31,7 @@ type HealthSyncData = {
   waistEntries: JsonRecord[];
   activityCheckIns: JsonRecord[];
   exerciseSessions: JsonRecord[];
+  sleepSessions: JsonRecord[];
   deletedEntryIds: DeletedEntryIds;
   profile?: unknown;
   profileUpdatedAt?: string;
@@ -197,6 +199,7 @@ function normalizeDeletedEntryIds(value: unknown): DeletedEntryIds {
     waistEntryIds: normalizeIdList(deletedEntryIds.waistEntryIds),
     activityCheckInIds: normalizeIdList(deletedEntryIds.activityCheckInIds),
     exerciseSessionIds: normalizeIdList(deletedEntryIds.exerciseSessionIds),
+    sleepSessionIds: normalizeIdList(deletedEntryIds.sleepSessionIds),
   };
 }
 
@@ -221,6 +224,7 @@ function normalizeHealthSyncData(value: unknown): NormalizedHealthSyncData {
     waistEntries: normalizeEntries(data.waistEntries),
     activityCheckIns: normalizeEntries(data.activityCheckIns),
     exerciseSessions: normalizeEntries(data.exerciseSessions),
+    sleepSessions: normalizeEntries(data.sleepSessions),
     deletedEntryIds: normalizeDeletedEntryIds(data.deletedEntryIds),
     profile: "profile" in data ? data.profile : {},
     profileUpdatedAt: normalizeTimestamp(
@@ -277,6 +281,9 @@ function mergeDeletedEntryIds(
   incoming: DeletedEntryIds,
 ): DeletedEntryIds {
   return {
+    sleepSessionIds: Array.from(
+      new Set([...existing.sleepSessionIds, ...incoming.sleepSessionIds]),
+    ),
     weightEntryIds: Array.from(
       new Set([...existing.weightEntryIds, ...incoming.weightEntryIds]),
     ),
@@ -380,6 +387,11 @@ function mergeHealthSyncData(
       existing.exerciseSessions,
       incoming.exerciseSessions,
       new Set(deletedEntryIds.exerciseSessionIds),
+    ),
+    sleepSessions: mergeEntries(
+      existing.sleepSessions,
+      incoming.sleepSessions,
+      new Set(deletedEntryIds.sleepSessionIds),
     ),
     deletedEntryIds,
     // Profile is an independent last-write-wins document. Older payloads that

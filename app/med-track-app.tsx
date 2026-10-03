@@ -89,6 +89,7 @@ import type {
   BloodPressureSession,
   DietCheckIn,
   ExerciseSession,
+  SleepSession,
   HealthProfile,
   HealthSettings,
   WaistEntry,
@@ -1401,8 +1402,14 @@ async function writeCloudSyncData(data: MedTrackSyncData) {
 }
 
 function readLocalHealthData(now: Date) {
+  const stored = readStoredJson(HEALTH_DATA_STORAGE_KEY);
+  const backupKey = "medtrack-health-data-before-sleep-v6";
+  if (isRecord(stored) && Number(stored.schemaVersion ?? 0) < 6 &&
+      readStoredJson(backupKey) === null) {
+    writeStoredJson(backupKey, stored);
+  }
   return normalizeHealthData(
-    readStoredJson(HEALTH_DATA_STORAGE_KEY),
+    stored,
     createDefaultHealthData(now),
   );
 }
@@ -3643,6 +3650,21 @@ export default function MedTrackApp() {
     toast.success("Exercise session saved");
   }
 
+  function handleSaveSleepSession(session: SleepSession) {
+    updateHealthData((currentData, updatedAt) => {
+      const existing = currentData.sleepSessions.find(entry => entry.id === session.id);
+      return {
+        ...currentData,
+        sleepSessions: [
+          { ...session, createdAt: existing?.createdAt ?? session.createdAt, updatedAt },
+          ...currentData.sleepSessions.filter(entry => entry.id !== session.id),
+        ],
+        updatedAt,
+      };
+    });
+    toast.success(session.endedAt ? "Sleep episode saved" : "Sleep started");
+  }
+
   function handleDeleteExerciseSession(id: string) {
     updateHealthData((currentData, updatedAt) => ({
       ...currentData,
@@ -4831,6 +4853,7 @@ export default function MedTrackApp() {
                 waistEntries={healthData.waistEntries}
                 activityCheckIns={healthData.activityCheckIns}
                 exerciseSessions={healthData.exerciseSessions}
+                sleepSessions={healthData.sleepSessions}
                 profile={healthData.profile}
                 settings={healthData.settings}
                 now={today}
@@ -4846,6 +4869,7 @@ export default function MedTrackApp() {
                 onDeleteActivity={handleDeleteActivityCheckIn}
                 onAddExerciseSession={handleAddExerciseSession}
                 onDeleteExerciseSession={handleDeleteExerciseSession}
+                onSaveSleepSession={handleSaveSleepSession}
                 onUpdateProfile={handleUpdateHealthProfile}
                 onUpdateSettings={handleUpdateHealthSettings}
               />

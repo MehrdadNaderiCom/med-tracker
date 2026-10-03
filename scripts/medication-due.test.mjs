@@ -18,7 +18,7 @@ function loadTsModule(relativePath, stubs = {}) {
     fileName: sourceUrl.pathname,
   }).outputText;
 
-  const module = { exports: {} };
+  const testModule = { exports: {} };
   const sandboxRequire = (id) => {
     if (id in stubs) return stubs[id];
     if (id.startsWith("./") || id.startsWith("../")) {
@@ -54,8 +54,8 @@ function loadTsModule(relativePath, stubs = {}) {
   };
 
   vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
+    exports: testModule.exports,
+    module: testModule,
     require: localRequire,
     console,
     Date,
@@ -72,7 +72,7 @@ function loadTsModule(relativePath, stubs = {}) {
     Intl,
   });
 
-  return module.exports;
+  return testModule.exports;
 }
 
 const {

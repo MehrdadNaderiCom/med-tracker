@@ -228,6 +228,25 @@ export interface HealthProfile {
   dietStartDate: string;
 }
 
+export type SleepKind = "main" | "nap" | "other";
+export type SleepQuality = 1 | 2 | 3 | 4 | 5;
+
+/** Each sleep episode is independent; multiple episodes may occur on any day. */
+export interface SleepSession {
+  id: string;
+  /** Estimated sleep start, stored as an instant; all form times use Tehran. */
+  startedAt: string;
+  /** Absent while the user is still sleeping. */
+  endedAt?: string;
+  kind: SleepKind;
+  /** Self-reported: 1 very poor through 5 very good; absent means not rated. */
+  quality?: SleepQuality;
+  awakenings?: number;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface HealthSettings {
   baselineWeightKg: number;
   baselineDate: string;
@@ -262,4 +281,5 @@ export interface HealthDeletionTombstones {
   waistEntryIds: string[];
   activityCheckInIds: string[];
   exerciseSessionIds: string[];
+  sleepSessionIds: string[];
 }

@@ -261,10 +261,10 @@ test("schema-v3 tombstones normalize missing later-schema lists to empty arrays"
   assert.deepEqual([...normalized.exerciseSessions], []);
 });
 
-test("schema-v4 data migrates in place to schema v5 exercise collections", () => {
+test("schema-v4 data migrates in place to current exercise and sleep collections", () => {
   const normalized = normalizeHealthData(legacyV4());
 
-  assert.equal(normalized.schemaVersion, 5);
+  assert.equal(normalized.schemaVersion, 6);
   assert.deepEqual([...normalized.exerciseSessions], []);
   assert.deepEqual([...normalized.deletedEntryIds.exerciseSessionIds], []);
 });

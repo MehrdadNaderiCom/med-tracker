@@ -51,6 +51,39 @@ const { mergeHealthSyncData } = routeModule.exports.__healthSyncTest;
 
 const timestamp = "2026-08-17T07:00:00.000Z";
 
+test("legacy clients cannot remove sleep or any other existing health collection", () => {
+  const row = { id: "sleep-1", startedAt: "2026-10-03T23:00:00+03:30", endedAt: "2026-10-04T07:00:00+03:30", kind: "main", quality: 4, createdAt: timestamp, updatedAt: timestamp };
+  const fields = ["weightEntries", "dietCheckIns", "waistEntries", "activityCheckIns", "exerciseSessions"];
+  const existing = healthDocument({ schemaVersion: 6, sleepSessions: [row] });
+  for (const key of fields) existing[key] = [{ id: `${key}-old`, updatedAt: timestamp, originalValue: 23 }];
+  existing.deletedEntryIds.sleepSessionIds = ["deleted-sleep"];
+  const oldPayload = healthDocument({ updatedAt: "2026-10-04T12:00:00Z" });
+  const merged = mergeHealthSyncData(existing, oldPayload, "2026-10-04T12:01:00Z");
+  assert.deepEqual(JSON.parse(JSON.stringify(merged.sleepSessions)), [row]);
+  for (const key of fields) assert.deepEqual(JSON.parse(JSON.stringify(merged[key])), existing[key]);
+  assert.deepEqual([...merged.deletedEntryIds.sleepSessionIds], ["deleted-sleep"]);
+  assert.equal(merged.schemaVersion, 6);
+});
+
+test("sleep edits merge by ID and retain concurrent sleep episodes", () => {
+  const row = { id: "sleep-1", startedAt: "2026-10-03T23:00:00+03:30", kind: "main", createdAt: timestamp, updatedAt: timestamp };
+  const existing = healthDocument({ schemaVersion: 6, sleepSessions: [row, { ...row, id: "sleep-2" }] });
+  const incoming = healthDocument({ schemaVersion: 6, sleepSessions: [{ ...row, endedAt: "2026-10-04T07:00:00+03:30", quality: 3, updatedAt: "2026-10-04T08:00:00Z" }] });
+  const merged = mergeHealthSyncData(existing, incoming, "2026-10-04T08:01:00Z");
+  assert.equal(merged.sleepSessions.length, 2);
+  assert.equal(merged.sleepSessions.find(s => s.id === "sleep-1").quality, 3);
+  assert.equal(merged.sleepSessions.find(s => s.id === "sleep-1").createdAt, timestamp);
+  assert.equal(merged.sleepSessions.find(s => s.id === "sleep-2").endedAt, undefined);
+});
+
+test("sleep tombstones win over late records without touching unrelated entries", () => {
+  const row = { id: "sleep-1", startedAt: "2026-10-03T23:00:00+03:30", updatedAt: timestamp };
+  const existing = healthDocument({ schemaVersion: 6, sleepSessions: [row, { ...row, id: "sleep-2" }] });
+  existing.deletedEntryIds.sleepSessionIds = ["sleep-1"];
+  const merged = mergeHealthSyncData(existing, healthDocument({ sleepSessions: [{ ...row, updatedAt: "2026-10-04T08:00:00Z" }] }), "2026-10-04T08:01:00Z");
+  assert.deepEqual(merged.sleepSessions.map(s => s.id), ["sleep-2"]);
+});
+
 function exerciseSession(overrides = {}) {
   return {
     id: "exercise-session-1",

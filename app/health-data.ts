@@ -22,6 +22,8 @@ import type {
   StrengthExerciseLog,
   StrengthMuscleGroup,
   StrengthResistanceType,
+  SleepSession,
+  SleepQuality,
   WaistEntry,
   WaistMeasurementMethod,
   WeightEntry,
@@ -35,6 +37,7 @@ export type HealthSyncData = {
   waistEntries: WaistEntry[];
   activityCheckIns: ActivityCheckIn[];
   exerciseSessions: ExerciseSession[];
+  sleepSessions: SleepSession[];
   deletedEntryIds: HealthDeletionTombstones;
   profile: HealthProfile;
   profileUpdatedAt: string;
@@ -43,7 +46,7 @@ export type HealthSyncData = {
   updatedAt: string;
 };
 
-export const HEALTH_SCHEMA_VERSION = 5;
+export const HEALTH_SCHEMA_VERSION = 6;
 export const BASELINE_WEIGHT_ENTRY_ID = "weight-baseline-2026-08-13-93-6";
 export const BASELINE_WAIST_ENTRY_ID = "waist-baseline-2026-08-13-115";
 
@@ -776,6 +779,29 @@ function normalizeIds(value: unknown) {
     : [];
 }
 
+export function normalizeSleepSession(value: unknown): SleepSession | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim() ||
+      !validIso(value.startedAt) || !validIso(value.createdAt) || !validIso(value.updatedAt)) {
+    return null;
+  }
+  const endedAt = value.endedAt;
+  if (endedAt !== undefined && (!validIso(endedAt) ||
+      Date.parse(endedAt as string) <= Date.parse(value.startedAt as string))) return null;
+  const quality = finiteInteger(value.quality, 1, 5);
+  const awakenings = finiteInteger(value.awakenings, 0, 100);
+  return {
+    id: value.id,
+    startedAt: value.startedAt as string,
+    ...(endedAt === undefined ? {} : { endedAt: endedAt as string }),
+    kind: value.kind === "main" || value.kind === "nap" ? value.kind : "other",
+    ...(quality === null ? {} : { quality: quality as SleepQuality }),
+    ...(awakenings === null ? {} : { awakenings }),
+    notes: normalizeOptionalText(value.notes),
+    createdAt: value.createdAt as string,
+    updatedAt: value.updatedAt as string,
+  };
+}
+
 function normalizeTombstones(value: unknown): HealthDeletionTombstones {
   const source = isRecord(value) ? value : {};
   return {
@@ -785,6 +811,7 @@ function normalizeTombstones(value: unknown): HealthDeletionTombstones {
     waistEntryIds: normalizeIds(source.waistEntryIds),
     activityCheckInIds: normalizeIds(source.activityCheckInIds),
     exerciseSessionIds: normalizeIds(source.exerciseSessionIds),
+    sleepSessionIds: normalizeIds(source.sleepSessionIds),
   };
 }
 
@@ -966,6 +993,7 @@ export function createDefaultHealthData(now = new Date()): HealthSyncData {
     ],
     activityCheckIns: [],
     exerciseSessions: [],
+    sleepSessions: [],
     deletedEntryIds: {
       weightEntryIds: [],
       bloodPressureSessionIds: [],
@@ -973,6 +1001,7 @@ export function createDefaultHealthData(now = new Date()): HealthSyncData {
       waistEntryIds: [],
       activityCheckInIds: [],
       exerciseSessionIds: [],
+      sleepSessionIds: [],
     },
     profile: { ...DEFAULT_HEALTH_PROFILE },
     // The seeded profile is a migration fallback until it is explicitly stored.
@@ -1076,6 +1105,13 @@ export function normalizeHealthData(
         })
       : []
     ).filter((entry) => !tombstones.exerciseSessionIds.includes(entry.id)),
+    sleepSessions: (Array.isArray(value.sleepSessions)
+      ? value.sleepSessions.flatMap((entry) => {
+          const normalized = normalizeSleepSession(entry);
+          return normalized ? [normalized] : [];
+        })
+      : []
+    ).filter((entry) => !tombstones.sleepSessionIds.includes(entry.id)),
     deletedEntryIds: tombstones,
     profile,
     profileUpdatedAt,
@@ -1094,6 +1130,10 @@ export function mergeHealthData(
   local: HealthSyncData,
 ): HealthSyncData {
   const deletedEntryIds: HealthDeletionTombstones = {
+    sleepSessionIds: Array.from(new Set([
+      ...cloud.deletedEntryIds.sleepSessionIds,
+      ...local.deletedEntryIds.sleepSessionIds,
+    ])),
     weightEntryIds: Array.from(
       new Set([...cloud.deletedEntryIds.weightEntryIds, ...local.deletedEntryIds.weightEntryIds]),
     ),
@@ -1162,6 +1202,11 @@ export function mergeHealthData(
       cloud.exerciseSessions,
       local.exerciseSessions,
       deletedEntryIds.exerciseSessionIds,
+    ),
+    sleepSessions: mergeRecordsById(
+      cloud.sleepSessions,
+      local.sleepSessions,
+      deletedEntryIds.sleepSessionIds,
     ),
     deletedEntryIds,
     profile: cloudProfileIsNewer ? cloud.profile : local.profile,

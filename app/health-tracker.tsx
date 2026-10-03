@@ -27,12 +27,14 @@ import type {
   ReactNode,
 } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import SleepTracker from "./sleep-tracker";
 
 const HEALTH_SECTION_NAV = [
   { id: "health-today", label: "Today", shortLabel: "Today" },
   { id: "health-profile", label: "Profile", shortLabel: "Profile" },
   { id: "health-weight", label: "Weight", shortLabel: "Weight" },
   { id: "health-bp", label: "Blood pressure", shortLabel: "BP" },
+  { id: "health-sleep", label: "Sleep", shortLabel: "Sleep" },
   { id: "health-diet", label: "Diet", shortLabel: "Diet" },
   { id: "health-waist", label: "Waist", shortLabel: "Waist" },
   { id: "health-movement", label: "Movement", shortLabel: "Move" },
@@ -60,6 +62,7 @@ import type {
   ExerciseActivityType,
   ExerciseIntensity,
   ExerciseSession,
+  SleepSession,
   HealthProfile,
   HealthSettings,
   StrengthExerciseLog,
@@ -316,6 +319,7 @@ export interface HealthTrackerProps {
   waistEntries: WaistEntry[];
   activityCheckIns: ActivityCheckIn[];
   exerciseSessions: ExerciseSession[];
+  sleepSessions: SleepSession[];
   profile: HealthProfile;
   settings: HealthSettings;
   now: Date;
@@ -331,6 +335,7 @@ export interface HealthTrackerProps {
   onDeleteActivity: (entryId: string) => MaybePromise;
   onAddExerciseSession: (session: ExerciseSession) => MaybePromise;
   onDeleteExerciseSession: (sessionId: string) => MaybePromise;
+  onSaveSleepSession: (session: SleepSession) => MaybePromise;
   onUpdateProfile: (profile: HealthProfile) => MaybePromise;
   onUpdateSettings: (settings: HealthSettings) => MaybePromise;
 }
@@ -4283,9 +4288,11 @@ function ProfilePanel({
 function SettingsPanel({
   settings,
   onUpdate,
+  now,
 }: {
   settings: HealthSettings;
   onUpdate: (settings: HealthSettings) => MaybePromise;
+  now: Date;
 }) {
   const [draft, setDraft] = useState(settings);
   const [message, setMessage] = useState("");
@@ -4446,6 +4453,19 @@ function SettingsPanel({
           <legend className="px-1 text-sm font-semibold text-zinc-800">
             Blood pressure measurement cycle
           </legend>
+          <button
+            type="button"
+            className="mb-3 inline-flex min-h-11 items-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-semibold text-emerald-800"
+            onClick={() => {
+              const start = localDateKey(now);
+              const end = new Date(`${start}T12:00:00Z`);
+              end.setUTCDate(end.getUTCDate() + 6);
+              setDraft(current => ({ ...current, bpCycleStartDate: start, bpCycleEndDate: end.toISOString().slice(0, 10) }));
+              setMessage("New 7-day cycle selected. Save settings to apply; previous measurements stay in history.");
+            }}
+          >
+            Start a new 7-day cycle today
+          </button>
           <p className="mb-3 text-xs leading-5 text-zinc-500">
             Use 3 days minimum and 7 days preferred. Each morning and evening session
             contains two readings at least one minute apart.
@@ -4594,6 +4614,7 @@ export function HealthTracker({
   waistEntries,
   activityCheckIns,
   exerciseSessions,
+  sleepSessions,
   profile,
   settings,
   now,
@@ -4609,6 +4630,7 @@ export function HealthTracker({
   onDeleteActivity,
   onAddExerciseSession,
   onDeleteExerciseSession,
+  onSaveSleepSession,
   onUpdateProfile,
   onUpdateSettings,
 }: HealthTrackerProps) {
@@ -5707,6 +5729,8 @@ export function HealthTracker({
         </div>
       </section>
 
+      <SleepTracker sessions={sleepSessions} now={now} onSave={onSaveSleepSession} />
+
       <section
         id="health-diet"
         className={`${CARD_CLASS} ${HEALTH_SECTION_SCROLL_CLASS}`}
@@ -6251,7 +6275,7 @@ export function HealthTracker({
         </details>
       </section>
 
-      <SettingsPanel settings={settings} onUpdate={onUpdateSettings} />
+      <SettingsPanel settings={settings} onUpdate={onUpdateSettings} now={now} />
 
       <section className="rounded-lg border border-zinc-200 bg-white p-4 text-xs leading-5 text-zinc-500">
         <div className="flex items-start gap-2">
